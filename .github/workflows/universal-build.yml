@@ -33,11 +33,11 @@ on:
 
 env:
   TZ: Asia/Shanghai
-  BUILD_TIMEOUT: "180"
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 180
     
     steps:
     - name: Checkout config repository
@@ -140,7 +140,7 @@ jobs:
         echo "All scripts executed"
 
     - name: Compile firmware
-      timeout-minutes: ${{ env.BUILD_TIMEOUT }}
+      timeout-minutes: 180
       run: |
         cd source
         BUILD_JOBS=$(( $(nproc) - 1 ))
