@@ -1,15 +1,12 @@
-# 设备配置文件列表
+# 📋 设备配置文件列表
 
-> 最后更新: Mon Oct 27 14:16:50 UTC 2025
-> 配置文件数量: 4 个
+> 最后更新: Mon Oct 27 14:47:26 UTC 2025
+> 配置文件数量: 1 个
 
 ## 可用配置文件
 
 ```
-configs/.config_66666_immortalwrt
-configs/.config_7777_immortalwrt
 configs/.config_rt-ac42u_immortalwrt
-configs/.config_xxxx_immortalwrt
 ```
 
 ## 使用方法
