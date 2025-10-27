@@ -68,14 +68,14 @@ jobs:
         
         PRESET="${{ github.event.inputs.source_preset }}"
         
-        # 使用更安全的jq查询，避免返回null
-        SOURCE_URL=$(jq -r ".$PRESET.url // empty" repositories.json)
-        DESCRIPTION=$(jq -r ".$PRESET.description // empty" repositories.json)
+        # 修复：从 repositories 对象中获取配置
+        SOURCE_URL=$(jq -r ".repositories.$PRESET.url // empty" repositories.json)
+        DESCRIPTION=$(jq -r ".repositories.$PRESET.description // empty" repositories.json)
         
         # 分支处理
         BRANCH="${{ github.event.inputs.source_branch }}"
         if [ "$BRANCH" = "auto" ]; then
-          BRANCH=$(jq -r ".$PRESET.recommended_branch // \"main\"" repositories.json)
+          BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch // \"main\"" repositories.json)
           echo "自动选择推荐分支: $BRANCH"
         fi
         
