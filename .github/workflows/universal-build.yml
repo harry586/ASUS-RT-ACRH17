@@ -33,7 +33,7 @@ on:
 
 env:
   TZ: Asia/Shanghai
-  BUILD_TIMEOUT: 180
+  BUILD_TIMEOUT: "180"
 
 jobs:
   build:
