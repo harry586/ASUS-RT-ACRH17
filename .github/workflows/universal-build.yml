@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_preset:
-        description: '选择源码库'
+        description: '选择源码库 (ImmortalWrt功能丰富/OpenWrt官方纯净/LEDE集成度高)'
         required: true
         type: choice
         options:
@@ -14,37 +14,43 @@ on:
         default: 'immortalwrt'
       
       source_branch:
-        description: '源码分支 (auto=自动推荐)'
+        description: '源码分支 (auto=自动推荐稳定分支，或手动指定分支名)'
         required: true
         default: 'auto'
         type: string
         
       config_profile:
-        description: '设备配置文件路径 - 查看 firmware-config/configs-list.md'
+        description: '设备配置文件路径 - 查看 firmware-config/configs-list.md 获取可用文件列表'
         required: true
         type: string
         default: 'configs/.config_rt-ac42u_immortalwrt'
       
       enable_custom_features:
-        description: '启用自定义功能'
+        description: '启用自定义功能 (自定义脚本和预编译IPK包)'
         required: false
         default: true
         type: boolean
 
 env:
-  TZ: "Asia/Shanghai"
-  BUILD_TIMEOUT: 180
+  TZ: "Asia/Shanghai"                    # 设置时区为中国标准时间
+  BUILD_TIMEOUT: 180                     # 构建超时时间（分钟）
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     
     steps:
+    # ======================
+    # 阶段1：环境准备和配置解析
+    # ======================
+    
+    # 步骤1: 检出配置仓库
     - name: "📥 检出配置仓库"
       uses: actions/checkout@v4
       with:
         path: .  # 直接检出到工作区根目录
 
+    # 步骤2: 解析源码库配置
     - name: "🔧 解析源码配置"
       id: source-config
       run: |
@@ -118,4 +124,308 @@ jobs:
         echo "SOURCE_URL=$SOURCE_URL" >> $GITHUB_ENV
         echo "SOURCE_BRANCH=$BRANCH" >> $GITHUB_ENV
 
-    # ... 其余步骤保持不变 ...
+    # 步骤3: 安装编译依赖
+    - name: "🧹 准备构建环境"
+      run: |
+        echo "安装编译依赖包..."
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+          gettext git libncurses5-dev libssl-dev python3 python3-pip \
+          python3-serial python3-setuptools rsync unzip zlib1g-dev file wget \
+          jq
+        echo "✅ 构建环境准备完成"
+
+    # ======================
+    # 阶段2：源码获取和初始化
+    # ======================
+    
+    # 步骤4: 克隆源代码
+    - name: "📥 获取源代码"
+      run: |
+        echo "正在克隆源码仓库: ${{ env.SOURCE_URL }}"
+        echo "使用分支: ${{ env.SOURCE_BRANCH }}"
+        
+        # 检查是否已存在source目录，如果存在则删除
+        if [ -d "source" ]; then
+          echo "清理已存在的source目录"
+          rm -rf source
+        fi
+        
+        # 克隆源码
+        git clone --depth 1 \
+          --branch "${{ env.SOURCE_BRANCH }}" \
+          "${{ env.SOURCE_URL }}" \
+          source
+          
+        echo "✅ 源码克隆完成"
+        echo "source目录内容:"
+        ls -la source/ | head -10
+
+    # 步骤5: 初始化源码
+    - name: "🔧 源码初始化"
+      run: |
+        cd source
+        echo "初始化源码树..."
+        echo "当前目录: $(pwd)"
+        
+        # 检查feeds配置文件
+        if [ -f "feeds.conf" ] || [ -f "feeds.conf.default" ]; then
+          echo "更新feeds..."
+          ./scripts/feeds update -a
+          echo "安装feeds..."
+          ./scripts/feeds install -a
+          echo "✅ Feeds更新完成"
+        else
+          echo "ℹ️ 未找到feeds配置文件，跳过feeds更新"
+        fi
+        
+        echo "源码树初始化完成"
+
+    # ======================
+    # 阶段3：配置应用和自定义功能
+    # ======================
+    
+    # 步骤6: 应用设备配置
+    - name: "🎨 应用自定义配置"
+      run: |
+        cd source
+        CONFIG_FILE="../firmware-config/${{ github.event.inputs.config_profile }}"
+        echo "正在应用配置文件: $CONFIG_FILE"
+        
+        # 验证配置文件
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "❌ 错误: 配置文件不存在: $CONFIG_FILE"
+          echo "当前firmware-config/configs目录内容:"
+          ls -la ../firmware-config/configs/ 2>/dev/null || echo "configs目录不存在"
+          exit 1
+        fi
+        
+        # 复制配置文件
+        cp "$CONFIG_FILE" .config
+        echo "✅ 配置文件应用完成: ${{ github.event.inputs.config_profile }}"
+        
+        # 显示配置基本信息
+        echo "配置基本信息:"
+        grep "CONFIG_TARGET" .config | head -5 || echo "无法读取配置"
+
+    # 步骤7: 执行自定义脚本
+    - name: "🛠️ 执行自定义脚本"
+      if: github.event.inputs.enable_custom_features == 'true'
+      run: |
+        cd source
+        SCRIPTS_DIR="../firmware-config/custom-features/scripts"
+        
+        echo "检查自定义脚本目录: $SCRIPTS_DIR"
+        if [ ! -d "$SCRIPTS_DIR" ]; then
+          echo "ℹ️ 自定义脚本目录不存在: $SCRIPTS_DIR"
+          exit 0
+        fi
+        
+        # 查找所有脚本
+        SCRIPTS=$(find "$SCRIPTS_DIR" -name "*.sh" -type f | sort)
+        
+        if [ -z "$SCRIPTS" ]; then
+          echo "ℹ️ 未找到任何脚本文件"
+          exit 0
+        fi
+        
+        echo "找到以下脚本文件:"
+        echo "$SCRIPTS"
+        
+        # 执行所有脚本
+        for script in $SCRIPTS; do
+          echo "执行脚本: $(basename "$script")"
+          chmod +x "$script"
+          if bash "$script"; then
+            echo "✅ $(basename "$script") 执行成功"
+          else
+            echo "❌ $(basename "$script") 执行失败"
+            exit 1
+          fi
+        done
+        
+        echo "✅ 所有自定义脚本执行完成"
+
+    # ======================
+    # 阶段4：编译过程
+    # ======================
+    
+    # 步骤8: 编译固件
+    - name: "🏗️ 编译固件"
+      timeout-minutes: ${{ env.BUILD_TIMEOUT }}
+      run: |
+        cd source
+        
+        echo "=== 编译环境检查 ==="
+        echo "当前目录: $(pwd)"
+        echo "目录内容:"
+        ls -la
+        echo ""
+        
+        echo "=== 检查配置文件 ==="
+        if [ -f ".config" ]; then
+          echo "✅ .config 文件存在"
+          echo "配置文件大小: $(wc -l < .config) 行"
+          echo "配置文件目标平台信息:"
+          grep "CONFIG_TARGET" .config | head -10 || echo "未找到目标平台配置"
+        else
+          echo "❌ .config 文件不存在"
+          exit 1
+        fi
+        
+        echo ""
+        echo "=== 开始编译过程 ==="
+        
+        # 计算并行任务数
+        BUILD_JOBS=$(( $(nproc) - 1 ))
+        [ $BUILD_JOBS -lt 1 ] && BUILD_JOBS=1
+        echo "CPU核心数: $(nproc)"
+        echo "使用并行任务数: $BUILD_JOBS"
+        
+        START_TIME=$(date +%s)
+        
+        echo "步骤1: 应用默认配置 (make defconfig)"
+        make defconfig
+        echo "✅ defconfig 完成"
+        
+        echo "步骤2: 下载源码包 (make download)"
+        make download -j${BUILD_JOBS} || {
+          echo "⚠️ 并行下载失败，尝试单线程详细模式"
+          make download -j1 V=s
+        }
+        echo "✅ 源码包下载完成"
+        
+        echo "步骤3: 开始编译固件 (make)"
+        echo "这可能会花费较长时间，请耐心等待..."
+        make -j${BUILD_JOBS} || {
+          echo "⚠️ 并行编译失败，尝试单线程详细模式"
+          make -j1 V=s
+        }
+        
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+        echo "✅ 编译完成! 总耗时: ${DURATION}秒"
+        
+        echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
+
+    # ======================
+    # 阶段5：输出处理和产物收集
+    # ======================
+    
+    # 步骤9: 收集构建产物
+    - name: "📦 收集构建产物"
+      run: |
+        cd source
+        echo "=== 查找编译输出 ==="
+        
+        echo "检查bin目录是否存在:"
+        if [ -d "bin" ]; then
+          echo "✅ bin目录存在"
+          echo "bin目录结构:"
+          find bin/ -type d 2>/dev/null | head -20
+        else
+          echo "❌ bin目录不存在，编译可能失败"
+          exit 1
+        fi
+        
+        echo ""
+        echo "=== 查找固件文件 ==="
+        # 查找各种可能的固件格式
+        FIRMWARE_FILES=$(find bin/targets -type f \( -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" -o -name "*.elf" -o -name "*.iso" \) 2>/dev/null | head -20)
+        
+        if [ -n "$FIRMWARE_FILES" ]; then
+          echo "✅ 找到固件文件:"
+          echo "$FIRMWARE_FILES"
+          
+          # 显示文件大小
+          echo ""
+          echo "固件文件大小:"
+          for file in $FIRMWARE_FILES; do
+            if [ -f "$file" ]; then
+              size=$(du -h "$file" | cut -f1)
+              echo "  $file - $size"
+            fi
+          done
+        else
+          echo "⚠️ 未找到标准固件文件"
+          echo "正在搜索bin目录中的所有文件..."
+          find bin/ -type f 2>/dev/null | head -30
+        fi
+        
+        echo ""
+        echo "=== 准备产物 ==="
+        mkdir -p ../artifacts
+        
+        # 复制目标文件
+        if [ -d "bin/targets" ]; then
+          echo "复制bin/targets目录..."
+          cp -r bin/targets/* ../artifacts/ 2>/dev/null || true
+        fi
+        
+        # 如果artifacts目录仍然为空，复制整个bin目录
+        if [ ! "$(ls -A ../artifacts 2>/dev/null)" ]; then
+          echo "artifacts目录为空，复制整个bin目录..."
+          cp -r bin/* ../artifacts/ 2>/dev/null || true
+        fi
+        
+        echo "产物目录内容:"
+        ls -la ../artifacts/ || echo "artifacts目录为空"
+        
+        # 创建详细的构建信息
+        echo "=== 创建构建信息 ==="
+        cat > ../artifacts/build-info.txt << EOF
+构建信息
+========
+源码库: ${{ env.SOURCE_URL }}
+分支: ${{ env.SOURCE_BRANCH }}
+配置文件: ${{ github.event.inputs.config_profile }}
+自定义功能: ${{ github.event.inputs.enable_custom_features }}
+构建时间: $(date)
+编译时长: ${{ env.BUILD_DURATION }}秒
+
+固件文件列表:
+$(echo "$FIRMWARE_FILES" | sed 's/^/  - /')
+
+工作流信息:
+- 运行编号: ${{ github.run_number }}
+- 运行ID: ${{ github.run_id }}
+EOF
+
+        echo "✅ 产物收集完成"
+
+    # 步骤10: 上传构建产物
+    - name: "💾 上传构建产物"
+      uses: actions/upload-artifact@v4
+      with:
+        name: "Firmware-${{ github.run_number }}-${{ github.event.inputs.source_preset }}"
+        path: artifacts/
+        retention-days: 30
+
+    # 步骤11: 构建报告
+    - name: "📊 构建报告"
+      if: always()
+      run: |
+        echo "=========================================="
+        echo "            🏗️ 构建报告"
+        echo "=========================================="
+        echo ""
+        echo "📋 基本信息:"
+        echo "  - 状态: ${{ job.status }}"
+        echo "  - 源码库: ${{ env.SOURCE_URL }}"
+        echo "  - 分支: ${{ env.SOURCE_BRANCH }}"
+        echo "  - 配置: ${{ github.event.inputs.config_profile }}"
+        echo "  - 自定义功能: ${{ github.event.inputs.enable_custom_features }}"
+        echo ""
+        
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "🎉 构建成功!"
+          echo "  - 编译时长: ${{ env.BUILD_DURATION }}秒"
+          echo "  - 固件已上传到 Artifacts"
+          echo "  - 产物名称: Firmware-${{ github.run_number }}-${{ github.event.inputs.source_preset }}"
+        else
+          echo "❌ 构建失败"
+          echo "  请检查日志中的错误信息"
+        fi
+        echo ""
+        echo "=========================================="
