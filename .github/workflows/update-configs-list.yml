@@ -3,9 +3,9 @@ name: Update Configs List
 on:
   push:
     paths:
-      - 'firmware-config/configs/**'  # 当configs目录有变化时触发
-    branches: [ main, master ]        # 同时支持 main 和 master 分支
-  workflow_dispatch:                  # 支持手动触发
+      - 'firmware-config/configs/**'
+    branches: [ main, master ]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,26 +13,18 @@ permissions:
 jobs:
   update-list:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: "📥 检出仓库"
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           
-      - name: "📋 生成配置文件列表"
+      - name: Generate config list
         run: |
           cd firmware-config
-          
-          # 获取配置文件列表
-          echo "扫描配置文件..."
           CONFIG_FILES=$(find configs -name ".config_*" -type f 2>/dev/null | sort || echo "")
           CONFIG_COUNT=$(echo "$CONFIG_FILES" | grep -c '^' || echo "0")
           
-          echo "找到 $CONFIG_COUNT 个配置文件"
-          
-          # 创建配置文件列表 - 使用多个echo命令避免多行字符串问题
-          echo "# 📋 设备配置文件列表" > configs-list.md
+          echo "# 设备配置文件列表" > configs-list.md
           echo "" >> configs-list.md
           echo "> 最后更新: $(date)" >> configs-list.md
           echo "> 配置文件数量: $CONFIG_COUNT 个" >> configs-list.md
@@ -48,21 +40,11 @@ jobs:
           echo '复制上面的配置文件路径，在工作流的"设备配置文件"字段中粘贴使用。' >> configs-list.md
           echo "" >> configs-list.md
           echo '文件命名格式: `.config_设备名_源码库`' >> configs-list.md
-          echo "" >> configs-list.md
-          echo "---" >> configs-list.md
-          echo "*本文件由 GitHub Actions 自动生成*" >> configs-list.md
           
-      - name: "💾 提交更改"
+      - name: Commit changes
         run: |
-          # 检查是否有实际更改
-          if git diff --quiet firmware-config/configs-list.md; then
-            echo "没有检测到配置文件列表的更改"
-          else
-            echo "检测到配置文件列表有更改，准备提交"
-            git config --global user.name "GitHub Actions"
-            git config --global user.email "actions@github.com"
-            git add firmware-config/configs-list.md
-            git commit -m "📋 自动更新配置文件列表"
-            git push
-            echo "✅ 已提交更新"
-          fi
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add firmware-config/configs-list.md
+          git diff --staged --quiet || git commit -m "更新配置文件列表"
+          git push
