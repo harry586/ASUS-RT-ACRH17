@@ -3,12 +3,9 @@ name: Update Configs List
 on:
   push:
     paths:
-      - 'firmware-config/configs/**'  # 监控 configs 目录的变化
+      - 'firmware-config/configs/**'  # 当configs目录有变化时触发
     branches: [ main, master ]        # 同时支持 main 和 master 分支
-  pull_request:
-    paths:
-      - 'firmware-config/configs/**'
-  workflow_dispatch:                  # 允许手动触发
+  workflow_dispatch:                  # 支持手动触发
 
 permissions:
   contents: write
@@ -17,21 +14,11 @@ jobs:
   update-list:
     runs-on: ubuntu-latest
     
-    # 添加步骤来调试触发原因
     steps:
       - name: "📥 检出仓库"
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0  # 获取完整历史记录以便检查更改
-          
-      - name: "🔍 检查文件变化"
-        run: |
-          echo "检查最近的文件变更..."
-          git diff --name-only HEAD~1 HEAD || echo "无法比较提交"
-          echo "---"
-          echo "configs 目录内容:"
-          ls -la firmware-config/configs/ || echo "configs 目录不存在"
           
       - name: "📋 生成配置文件列表"
         run: |
@@ -43,10 +30,9 @@ jobs:
           CONFIG_COUNT=$(echo "$CONFIG_FILES" | grep -c '^' || echo "0")
           
           echo "找到 $CONFIG_COUNT 个配置文件"
-          echo "$CONFIG_FILES"
           
-          # 创建配置文件列表
-          echo "# 设备配置文件列表" > configs-list.md
+          # 创建配置文件列表 - 使用多个echo命令避免多行字符串问题
+          echo "# 📋 设备配置文件列表" > configs-list.md
           echo "" >> configs-list.md
           echo "> 最后更新: $(date)" >> configs-list.md
           echo "> 配置文件数量: $CONFIG_COUNT 个" >> configs-list.md
