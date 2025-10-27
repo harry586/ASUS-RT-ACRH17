@@ -1,9 +1,16 @@
-﻿name: "Universal Firmware Builder"
+# =============================================
+# 工作流基本信息
+# =============================================
+name: "Universal Firmware Builder"
 
+# =============================================
+# 触发条件配置
+# =============================================
 on:
+  # 手动触发配置 - 用户通过界面手动启动工作流
   workflow_dispatch:
     inputs:
-      # 源码库选择 - 支持主流OpenWrt分支
+      # 源码库选择输入 - 支持主流OpenWrt分支
       source_preset:
         description: '选择源码库 (ImmortalWrt功能丰富/OpenWrt官方纯净/LEDE集成度高)'
         required: true
@@ -14,14 +21,14 @@ on:
           - lede
         default: 'immortalwrt'
       
-      # 分支选择 - 支持自动推荐或手动指定
+      # 分支选择输入 - 支持自动推荐或手动指定
       source_branch:
         description: '源码分支 (auto=自动推荐稳定分支，或手动指定分支名)'
         required: true
         default: 'auto'
         type: string
         
-      # 设备配置文件 - 用户需要查看configs-list.md获取可用选项
+      # 设备配置文件输入 - 用户需要查看configs-list.md获取可用选项
       config_profile:
         description: '设备配置文件路径 - 查看 firmware-config/configs-list.md 获取可用文件列表'
         required: true
@@ -35,20 +42,26 @@ on:
         default: true
         type: boolean
 
-# 环境变量 - 配置构建环境
+# =============================================
+# 环境变量配置
+# =============================================
 env:
   TZ: "Asia/Shanghai"                    # 设置时区为中国标准时间
   BUILD_TIMEOUT: 180                     # 构建超时时间（分钟）
 
+# =============================================
+# 工作定义
+# =============================================
 jobs:
+  # 主构建任务
   build:
-    runs-on: ubuntu-22.04                # 使用Ubuntu 22.04作为构建环境
+    # 运行环境 - 使用Ubuntu 22.04作为构建环境
+    runs-on: ubuntu-22.04
     
-    steps:
     # ======================
     # 阶段1：环境准备和配置解析
     # ======================
-    
+    steps:
     # 步骤1: 检出配置仓库到firmware-config目录
     - name: "📥 检出配置仓库"
       uses: actions/checkout@v4
@@ -59,15 +72,36 @@ jobs:
     - name: "🔧 解析源码配置"
       id: source-config
       run: |
-        cd firmware-config
-        echo "正在读取源码库配置..."
+        # 调试信息：显示当前目录结构
+        echo "当前工作目录: $(pwd)"
+        echo "目录内容:"
+        ls -la
+        echo "---"
         
-        # 检查repositories.json文件是否存在
-        if [ ! -f "repositories.json" ]; then
-          echo "❌ 错误: repositories.json 文件不存在"
+        # 检查 firmware-config 目录是否存在
+        if [ ! -d "firmware-config" ]; then
+          echo "❌ 错误: firmware-config 目录不存在"
+          echo "请确保仓库中有 firmware-config 目录"
           exit 1
         fi
         
+        # 进入配置目录
+        cd firmware-config
+        echo "进入 firmware-config 目录"
+        echo "目录内容:"
+        ls -la
+        echo "---"
+        
+        # 检查 repositories.json 文件是否存在
+        if [ ! -f "repositories.json" ]; then
+          echo "❌ 错误: repositories.json 文件不存在"
+          echo "请在 firmware-config 目录下创建 repositories.json 文件"
+          exit 1
+        fi
+        
+        echo "正在读取源码库配置..."
+        
+        # 获取用户选择的源码库预设
         PRESET="${{ github.event.inputs.source_preset }}"
         
         # 从repositories.json中提取源码URL和描述
@@ -84,6 +118,8 @@ jobs:
         # 验证配置数据是否有效
         if [ -z "$SOURCE_URL" ]; then
           echo "❌ 错误: 无法从repositories.json获取源码URL，请检查$PRESET配置"
+          echo "repositories.json 内容:"
+          cat repositories.json
           exit 1
         fi
         
@@ -92,6 +128,7 @@ jobs:
           exit 1
         fi
         
+        # 显示成功信息
         echo "✅ 源码库: $PRESET - $DESCRIPTION"
         echo "✅ 仓库URL: $SOURCE_URL"
         echo "✅ 使用分支: $BRANCH"
@@ -158,6 +195,8 @@ jobs:
         if [ ! -f "$CONFIG_FILE" ]; then
           echo "❌ 错误: 配置文件不存在: $CONFIG_FILE"
           echo "💡 请查看 firmware-config/configs-list.md 获取可用配置文件列表"
+          echo "当前 configs 目录内容:"
+          ls -la ../firmware-config/configs/ || echo "configs 目录不存在"
           exit 1
         fi
         
