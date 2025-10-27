@@ -2,15 +2,44 @@
   "repositories": {
     "immortalwrt": {
       "url": "https://github.com/immortalwrt/immortalwrt",
-      "recommended_branch": "openwrt-21.02"
+      "description": "ImmortalWrt 开源路由器系统",
+      "stable_branches": ["openwrt-21.02", "openwrt-23.05", "master"],
+      "recommended_branch": "openwrt-21.02",
+      "features": {
+        "custom_plugins_support": true,
+        "patch_friendly": true,
+        "luci_themes": true
+      },
+      "notes": "推荐用于需要丰富功能和国内优化的场景"
     },
     "openwrt": {
       "url": "https://github.com/openwrt/openwrt",
-      "recommended_branch": "main"
+      "description": "OpenWrt 官方主线",
+      "stable_branches": ["main", "v23.05.x", "v22.03.x"],
+      "recommended_branch": "main",
+      "features": {
+        "custom_plugins_support": true,
+        "patch_friendly": true,
+        "luci_themes": false
+      },
+      "notes": "推荐用于追求稳定性和官方支持的环境"
     },
     "lede": {
-      "url": "https://github.com/coolsnowwolf/lede", 
-      "recommended_branch": "master"
+      "url": "https://github.com/coolsnowwolf/lede",
+      "description": "Lean's LEDE 源码",
+      "stable_branches": ["master"],
+      "recommended_branch": "master",
+      "features": {
+        "custom_plugins_support": true,
+        "patch_friendly": true,
+        "luci_themes": true
+      },
+      "notes": "推荐用于需要最新功能和丰富插件的场景"
     }
+  },
+  "defaults": {
+    "repository": "immortalwrt",
+    "branch": "auto",
+    "config_path": "configs/.config_default"
   }
 }
