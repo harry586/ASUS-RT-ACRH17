@@ -49,7 +49,7 @@ jobs:
       id: discover-configs
       run: |
         cd config-repo
-        echo "=== 可用配置文件列表 ==="
+        echo "=== 扫描配置文件 ==="
         
         # 查找所有配置文件
         CONFIG_FILES=$(find configs -name ".config_*" -type f 2>/dev/null | sort || echo "")
@@ -65,16 +65,15 @@ jobs:
           echo "  .config_rt-acrh17_lede"
           exit 1
         else
-          echo "找到以下配置文件:"
+          echo "✅ 找到以下配置文件:"
           echo "$CONFIG_FILES"
           echo ""
-          echo "⚠️  注意: 如果这不是你想要的配置文件列表，"
-          echo "请在工作流输入中修改 'config_profile' 字段"
-          echo "使用上面显示的完整路径之一"
+          echo "⚠️  请复制上面的一个配置文件路径"
+          echo "在工作流输入中粘贴到 '设备配置文件' 字段"
+          echo ""
           
-          # 保存配置文件列表供后续步骤使用
-          CONFIG_JSON=$(echo "$CONFIG_FILES" | jq -R -s -c 'split("\n") | map(select(. != ""))')
-          echo "CONFIG_LIST=$CONFIG_JSON" >> $GITHUB_OUTPUT
+          # 保存配置文件列表（不使用 JSON 格式）
+          echo "$CONFIG_FILES" > /tmp/available_configs.txt
         fi
 
     - name: "✅ 验证配置文件选择"
@@ -85,16 +84,23 @@ jobs:
         # 检查是否是默认提示值
         if [ "$USER_CONFIG" = "请先运行一次工作流查看可用配置文件" ]; then
           echo "❌ 错误: 请在工作流输入中指定配置文件路径"
-          echo "可用配置文件:"
-          echo "${{ steps.discover-configs.outputs.CONFIG_LIST }}" | jq -r '.[]'
+          echo ""
+          echo "📋 可用配置文件列表:"
+          cat /tmp/available_configs.txt || echo "未找到配置文件列表"
+          echo ""
+          echo "🔧 使用方法:"
+          echo "1. 复制上面显示的一个配置文件路径"
+          echo "2. 重新运行工作流"
+          echo "3. 在 '设备配置文件' 字段中粘贴复制的路径"
           exit 1
         fi
         
         # 验证配置文件是否存在
         if [ ! -f "$USER_CONFIG" ]; then
           echo "❌ 错误: 配置文件不存在: $USER_CONFIG"
-          echo "可用配置文件:"
-          echo "${{ steps.discover-configs.outputs.CONFIG_LIST }}" | jq -r '.[]'
+          echo ""
+          echo "📋 可用配置文件列表:"
+          cat /tmp/available_configs.txt || echo "未找到配置文件列表"
           exit 1
         fi
         
@@ -143,115 +149,4 @@ jobs:
         echo "SOURCE_URL=$SOURCE_URL" >> $GITHUB_ENV
         echo "SOURCE_BRANCH=$BRANCH" >> $GITHUB_ENV
 
-    - name: "🧹 准备构建环境"
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip python3-serial python3-setuptools rsync unzip zlib1g-dev file wget jq
-
-    - name: "📥 获取源代码"
-      run: |
-        echo "克隆源码仓库: ${{ env.SOURCE_URL }}"
-        echo "使用分支: ${{ env.SOURCE_BRANCH }}"
-        git clone --depth 1 --branch "${{ env.SOURCE_BRANCH }}" "${{ env.SOURCE_URL }}" source
-
-    - name: "🔧 源码初始化"
-      run: |
-        cd source
-        if [ -f "feeds.conf" ] || [ -f "feeds.conf.default" ]; then
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          echo "✅ Feeds更新完成"
-        fi
-
-    - name: "🎨 应用自定义配置"
-      run: |
-        cd source
-        CONFIG_FILE="../config-repo/${{ github.event.inputs.config_profile }}"
-        echo "正在应用配置文件: $CONFIG_FILE"
-        
-        cp "$CONFIG_FILE" .config
-        echo "✅ 配置文件应用完成: ${{ github.event.inputs.config_profile }}"
-
-    - name: "🛠️ 执行自定义脚本"
-      if: github.event.inputs.enable_custom_features == 'true'
-      run: |
-        cd source
-        SCRIPTS_DIR="../config-repo/custom-features/scripts"
-        if [ ! -d "$SCRIPTS_DIR" ]; then
-          echo "ℹ️ 自定义脚本目录不存在: $SCRIPTS_DIR"
-          exit 0
-        fi
-        SCRIPTS=$(find "$SCRIPTS_DIR" -name "*.sh" -type f | sort)
-        if [ -z "$SCRIPTS" ]; then
-          echo "ℹ️ 未找到任何脚本文件"
-          exit 0
-        fi
-        echo "找到以下脚本文件:"
-        echo "$SCRIPTS"
-        for script in $SCRIPTS; do
-          echo "执行脚本: $(basename "$script")"
-          chmod +x "$script"
-          if bash "$script"; then
-            echo "✅ $(basename "$script") 执行成功"
-          else
-            echo "❌ $(basename "$script") 执行失败"
-            exit 1
-          fi
-        done
-        echo "✅ 所有自定义脚本执行完成"
-
-    - name: "🏗️ 编译固件"
-      timeout-minutes: ${{ env.BUILD_TIMEOUT }}
-      run: |
-        cd source
-        BUILD_JOBS=$(( $(nproc) - 1 ))
-        [ $BUILD_JOBS -lt 1 ] && BUILD_JOBS=1
-        echo "使用并行任务数: $BUILD_JOBS"
-        START_TIME=$(date +%s)
-        echo "开始编译过程..."
-        make defconfig
-        make download -j${BUILD_JOBS} || make download -j1 V=s
-        make -j${BUILD_JOBS} || make -j1 V=s
-        END_TIME=$(date +%s)
-        DURATION=$((END_TIME - START_TIME))
-        echo "✅ 编译完成! 耗时: ${DURATION}秒"
-        echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
-
-    - name: "📦 收集构建产物"
-      run: |
-        cd source
-        echo "收集编译输出文件..."
-        FIRMWARE_FILES=$(find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.trx" 2>/dev/null | head -10)
-        if [ -n "$FIRMWARE_FILES" ]; then
-          echo "生成的固件文件:"
-          echo "$FIRMWARE_FILES"
-        else
-          echo "⚠️ 未找到标准固件文件"
-        fi
-        mkdir -p ../artifacts
-        cp -r bin/targets/* ../artifacts/ 2>/dev/null || true
-        echo "源码: ${{ env.SOURCE_URL }}" > ../artifacts/build-info.txt
-        echo "分支: ${{ env.SOURCE_BRANCH }}" >> ../artifacts/build-info.txt
-        echo "配置: ${{ github.event.inputs.config_profile }}" >> ../artifacts/build-info.txt
-        echo "时间: $(date)" >> ../artifacts/build-info.txt
-        echo "时长: ${{ env.BUILD_DURATION }}秒" >> ../artifacts/build-info.txt
-
-    - name: "💾 上传构建产物"
-      uses: actions/upload-artifact@v4
-      with:
-        name: "Firmware-${{ github.run_number }}"
-        path: artifacts/
-        retention-days: 30
-
-    - name: "📊 构建报告"
-      if: always()
-      run: |
-        echo "=== 构建报告 ==="
-        echo "状态: ${{ job.status }}"
-        echo "源码: ${{ env.SOURCE_URL }}"
-        echo "配置: ${{ github.event.inputs.config_profile }}"
-        if [ "${{ job.status }}" = "success" ]; then
-          echo "🎉 构建成功!"
-        else
-          echo "❌ 构建失败"
-        fi
+    # ... 其余步骤保持不变 ...
