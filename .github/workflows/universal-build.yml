@@ -22,12 +22,7 @@ on:
       config_profile:
         description: '设备配置文件'
         required: true
-        type: choice
-        options:
-          - configs/.config_rt-ac42u_immortalwrt
-          - configs/.config_rt-acrh17_lede
-          - configs/.config_x86-64_openwrt
-          - configs/.config_default
+        type: string
         default: 'configs/.config_rt-ac42u_immortalwrt'
       
       enable_custom_features:
@@ -50,6 +45,26 @@ jobs:
       with:
         path: config-repo
 
+    - name: "🔍 发现可用配置文件"
+      id: discover-configs
+      run: |
+        cd config-repo
+        echo "扫描配置文件..."
+        
+        # 查找所有配置文件
+        CONFIG_FILES=$(find configs -name ".config_*" -type f | sort || echo "")
+        
+        if [ -z "$CONFIG_FILES" ]; then
+          echo "⚠️ 未找到任何配置文件"
+          echo "CONFIG_LIST=" >> $GITHUB_OUTPUT
+        else
+          echo "找到以下配置文件:"
+          echo "$CONFIG_FILES"
+          # 将文件列表转换为JSON数组格式
+          CONFIG_JSON=$(echo "$CONFIG_FILES" | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          echo "CONFIG_LIST=$CONFIG_JSON" >> $GITHUB_OUTPUT
+        fi
+
     - name: "🔧 解析源码配置"
       id: source-config
       run: |
@@ -62,13 +77,9 @@ jobs:
           exit 1
         fi
         
-        echo "repositories.json 内容:"
-        cat repositories.json
-        echo "---"
-        
         PRESET="${{ github.event.inputs.source_preset }}"
         
-        # 修复：从 repositories 对象中获取配置
+        # 从 repositories 对象中获取配置
         SOURCE_URL=$(jq -r ".repositories.$PRESET.url // empty" repositories.json)
         DESCRIPTION=$(jq -r ".repositories.$PRESET.description // empty" repositories.json)
         
@@ -121,12 +132,21 @@ jobs:
       run: |
         cd source
         CONFIG_FILE="../config-repo/${{ github.event.inputs.config_profile }}"
+        echo "正在查找配置文件: $CONFIG_FILE"
+        
         if [ ! -f "$CONFIG_FILE" ]; then
           echo "❌ 错误: 配置文件不存在: $CONFIG_FILE"
+          echo "可用的配置文件:"
+          if [ -n "${{ steps.discover-configs.outputs.CONFIG_LIST }}" ]; then
+            echo "${{ steps.discover-configs.outputs.CONFIG_LIST }}" | jq -r '.[]'
+          else
+            echo "未发现任何配置文件"
+          fi
           exit 1
         fi
+        
         cp "$CONFIG_FILE" .config
-        echo "✅ 配置文件应用完成"
+        echo "✅ 配置文件应用完成: ${{ github.event.inputs.config_profile }}"
 
     - name: "🛠️ 执行自定义脚本"
       if: github.event.inputs.enable_custom_features == 'true'
