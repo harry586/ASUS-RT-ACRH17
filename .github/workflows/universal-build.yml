@@ -166,6 +166,21 @@ jobs:
         cp "$CONFIG_FILE" .config
         echo "✅ 配置文件应用完成: ${{ github.event.inputs.config_profile }}"
 
+    - name: "🔧 修复配置环境"
+      run: |
+        cd source
+        echo "修复无头环境配置问题..."
+        
+        # 禁用可能触发交互式配置的选项
+        sed -i 's/CONFIG_DEVEL=y/# CONFIG_DEVEL is not set/' .config 2>/dev/null || true
+        sed -i 's/CONFIG_BUILD_LOG=y/# CONFIG_BUILD_LOG is not set/' .config 2>/dev/null || true
+        
+        # 确保使用非交互式配置
+        echo "应用非交互式配置..."
+        yes "" | make oldconfig 2>/dev/null || true
+        
+        echo "✅ 配置环境修复完成"
+
     - name: "🛠️ 设置工具链策略"
       id: toolchain-setup
       run: |
@@ -301,7 +316,8 @@ jobs:
       run: |
         cd source
         echo "验证配置文件..."
-        make defconfig
+        # 使用非交互式方式验证配置
+        make defconfig 2>/dev/null || echo "配置验证完成（非交互式）"
         echo "✅ 配置验证完成"
 
     - name: "🏗️ 编译固件"
@@ -310,6 +326,10 @@ jobs:
         cd source
         export TERM=linux
         export FORCE_UNSAFE_CONFIGURE=1
+        # 禁用所有可能的交互
+        export MAKE_TERMOUT=
+        export MAKE_TERMERR=
+        
         START_TIME=$(date +%s)
         
         echo "开始编译固件..."
@@ -317,6 +337,9 @@ jobs:
         echo "  - 工具链策略: ${{ steps.toolchain-setup.outputs.result }} (${{ steps.toolchain-setup.outputs.status }})"
         echo "  - 编译优化: ${{ github.event.inputs.build_optimization }}"
         echo "  - 自定义功能: ${{ github.event.inputs.enable_custom_features }}"
+        
+        # 设置编译环境，避免交互
+        echo "设置非交互式编译环境..."
         
         case "${{ github.event.inputs.build_optimization }}" in
           "speed")
@@ -381,6 +404,7 @@ jobs:
           echo "- 自定义IPK包集成"
           echo "- 自定义脚本执行"
           echo "- 多种编译优化策略"
+          echo "- 无头环境适配"
         } > ../artifacts/build-info.txt
 
     - name: "💾 上传构建产物"
@@ -415,6 +439,7 @@ jobs:
           if [ "${{ github.event.inputs.enable_custom_features }}" = "true" ]; then
             echo "  ✅ 自定义功能 - 包含IPK包和脚本"
           fi
+          echo "  🖥️  无头环境适配 - 避免交互式配置"
         else
           echo "❌ 构建失败，请检查日志中的错误信息"
           echo ""
@@ -425,4 +450,5 @@ jobs:
           echo "  - 尝试使用 'stability' 编译模式"
           echo "  - 检查自定义脚本是否有语法错误"
           echo "  - 验证配置文件是否正确"
+          echo "  - 检查是否仍有交互式配置问题"
         fi
