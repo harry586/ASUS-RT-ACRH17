@@ -14,7 +14,7 @@ on:
         default: 'immortalwrt'
       
       source_branch:
-        description: '源码分支 (auto=自动推荐)'
+        description: '源码分支'
         required: true
         default: 'auto'
         type: string
@@ -25,10 +25,10 @@ on:
         type: string
         default: 'configs/.config_rt-ac42u_immortalwrt'
       
-      enable_custom_features:
-        description: '启用自定义功能'
+      enable_debug:
+        description: '启用调试模式'
         required: false
-        default: true
+        default: false
         type: boolean
 
 env:
@@ -46,15 +46,15 @@ jobs:
     - name: Parse source configuration
       id: source-config
       run: |
-        echo "Checking firmware-config directory..."
+        echo "检查固件配置目录..."
         if [ ! -d "firmware-config" ]; then
-          echo "Error: firmware-config directory not found"
+          echo "错误: firmware-config 目录未找到"
           exit 1
         fi
         
-        echo "Checking repositories.json..."
+        echo "检查 repositories.json..."
         if [ ! -f "firmware-config/repositories.json" ]; then
-          echo "Error: repositories.json not found"
+          echo "错误: repositories.json 未找到"
           exit 1
         fi
         
@@ -65,17 +65,17 @@ jobs:
         BRANCH="${{ github.event.inputs.source_branch }}"
         if [ "$BRANCH" = "auto" ]; then
           BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch // \"main\"" firmware-config/repositories.json)
-          echo "Auto-selected branch: $BRANCH"
+          echo "自动选择分支: $BRANCH"
         fi
         
         if [ -z "$SOURCE_URL" ]; then
-          echo "Error: Could not get source URL from repositories.json"
+          echo "错误: 无法从 repositories.json 获取源码 URL"
           exit 1
         fi
         
-        echo "Source: $PRESET - $DESCRIPTION"
+        echo "源码: $PRESET - $DESCRIPTION"
         echo "URL: $SOURCE_URL"
-        echo "Branch: $BRANCH"
+        echo "分支: $BRANCH"
         
         echo "SOURCE_URL=$SOURCE_URL" >> $GITHUB_ENV
         echo "SOURCE_BRANCH=$BRANCH" >> $GITHUB_ENV
@@ -87,7 +87,7 @@ jobs:
 
     - name: Get source code
       run: |
-        echo "Cloning source repository: ${{ env.SOURCE_URL }}"
+        echo "克隆源码仓库: ${{ env.SOURCE_URL }}"
         git clone --depth 1 --branch "${{ env.SOURCE_BRANCH }}" "${{ env.SOURCE_URL }}" source
 
     - name: Initialize source
@@ -96,113 +96,64 @@ jobs:
         if [ -f "feeds.conf" ] || [ -f "feeds.conf.default" ]; then
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          echo "Feeds updated"
+          echo "软件源更新完成"
         fi
 
-    - name: Apply custom configuration
+    - name: Apply configuration
       run: |
         cd source
         CONFIG_FILE="../firmware-config/${{ github.event.inputs.config_profile }}"
-        echo "Applying config: $CONFIG_FILE"
+        echo "应用配置文件: $CONFIG_FILE"
         
         if [ ! -f "$CONFIG_FILE" ]; then
-          echo "Error: Config file not found: $CONFIG_FILE"
+          echo "错误: 配置文件未找到: $CONFIG_FILE"
           exit 1
         fi
         
         cp "$CONFIG_FILE" .config
-        echo "Config applied"
+        echo "配置文件应用成功"
 
-    - name: Fix package conflicts
+    - name: Verify configuration
       run: |
         cd source
-        echo "修复软件包冲突..."
-        
-        # 备份原配置
-        cp .config .config.backup
-        
-        # 彻底解决 DNSMasq 冲突
-        echo "处理 DNSMasq 冲突..."
-        sed -i '/CONFIG_PACKAGE_dnsmasq/d' .config
-        sed -i '/CONFIG_PACKAGE_dnsmasq-full/d' .config
-        echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
-        echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
-        
-        # 检查其他常见冲突
-        echo "检查其他可能冲突..."
-        
-        # 确保只有一个防火墙
-        sed -i '/CONFIG_PACKAGE_firewall/d' .config
-        echo "CONFIG_PACKAGE_firewall=y" >> .config
-        
-        # 确保只有一个 opkg
-        sed -i '/CONFIG_PACKAGE_opkg/d' .config
-        echo "CONFIG_PACKAGE_opkg=y" >> .config
-        
-        echo "软件包冲突修复完成"
+        echo "=== 配置验证 ==="
+        echo "检查 DNSMasq 配置:"
+        grep -i "dnsmasq" .config || echo "未找到 DNSMasq 配置"
+        echo "配置文件行数:"
+        wc -l .config
+        make defconfig
+        echo "配置验证完成"
 
-    - name: Execute custom scripts
-      if: github.event.inputs.enable_custom_features == 'true'
+    - name: System diagnostics
+      if: github.event.inputs.enable_debug == 'true'
       run: |
         cd source
-        SCRIPTS_DIR="../firmware-config/custom-features/scripts"
-        
-        if [ ! -d "$SCRIPTS_DIR" ]; then
-          echo "Custom scripts directory not found"
-          exit 0
-        fi
-        
-        SCRIPTS=$(find "$SCRIPTS_DIR" -name "*.sh" -type f | sort)
-        
-        if [ -z "$SCRIPTS" ]; then
-          echo "No script files found"
-          exit 0
-        fi
-        
-        for script in $SCRIPTS; do
-          echo "Executing: $(basename "$script")"
-          chmod +x "$script"
-          bash "$script" || exit 1
-        done
-        
-        echo "All scripts executed"
-
-    - name: Diagnose build environment
-      run: |
-        cd source
-        echo "=== 诊断信息 ==="
+        echo "=== 系统诊断 ==="
         echo "磁盘空间:"
         df -h
-        echo "内存信息:"
+        echo "内存使用:"
         free -h
-        echo "CPU信息:"
+        echo "CPU 核心数:"
         nproc
-        echo "检查关键软件包配置:"
-        grep -E "(dnsmasq|firewall|opkg)" .config || echo "未找到相关配置"
+        echo "系统信息:"
+        uname -a
 
-    - name: Clean and reconfigure
-      run: |
-        cd source
-        echo "清理并重新配置..."
-        make defconfig
-        # 清理可能的旧编译结果
-        make clean 2>/dev/null || true
-
-    - name: Compile firmware (optimized)
+    - name: Compile firmware
       timeout-minutes: 180
       run: |
         cd source
         
-        # 记录开始时间
         START_TIME=$(date +%s)
+        echo "开始编译固件..."
         
-        echo "=== 开始编译 ==="
-        echo "使用详细输出模式编译..."
+        if [ "${{ github.event.inputs.enable_debug }}" = "true" ]; then
+          echo "调试模式: 使用详细输出"
+          make V=s -j$(($(nproc) + 1))
+        else
+          echo "普通模式: 使用并行编译"
+          make -j$(($(nproc) + 1)) || make -j1 V=s
+        fi
         
-        # 使用单线程详细编译，便于调试
-        make V=s -j1
-        
-        # 记录构建时间
         END_TIME=$(date +%s)
         DURATION=$((END_TIME - START_TIME))
         echo "编译完成，耗时: ${DURATION} 秒"
@@ -211,43 +162,51 @@ jobs:
     - name: Collect build artifacts
       run: |
         cd source
-        echo "Collecting build outputs..."
+        echo "收集构建产物..."
         
+        # 查找固件文件
         FIRMWARE_FILES=$(find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.trx" 2>/dev/null | head -10)
         if [ -n "$FIRMWARE_FILES" ]; then
-          echo "Firmware files found:"
+          echo "找到固件文件:"
           echo "$FIRMWARE_FILES"
         else
-          echo "No standard firmware files found"
-          echo "Available files in bin/targets:"
+          echo "未找到标准固件文件"
+          echo "bin/targets 中的可用文件:"
           find bin/targets -type f 2>/dev/null | head -20
         fi
         
+        # 创建产物目录
         mkdir -p ../artifacts
         cp -r bin/targets/* ../artifacts/ 2>/dev/null || true
 
-        echo "Source: ${{ env.SOURCE_URL }}" > ../artifacts/build-info.txt
-        echo "Branch: ${{ env.SOURCE_BRANCH }}" >> ../artifacts/build-info.txt
-        echo "Config: ${{ github.event.inputs.config_profile }}" >> ../artifacts/build-info.txt
-        echo "Time: $(date)" >> ../artifacts/build-info.txt
-        echo "Duration: ${{ env.BUILD_DURATION }} seconds" >> ../artifacts/build-info.txt
+        # 创建构建信息文件
+        echo "源码: ${{ env.SOURCE_URL }}" > ../artifacts/build-info.txt
+        echo "分支: ${{ env.SOURCE_BRANCH }}" >> ../artifacts/build-info.txt
+        echo "配置: ${{ github.event.inputs.config_profile }}" >> ../artifacts/build-info.txt
+        echo "时间: $(date)" >> ../artifacts/build-info.txt
+        echo "编译时长: ${{ env.BUILD_DURATION }} 秒" >> ../artifacts/build-info.txt
+        echo "GitHub Run ID: ${{ github.run_id }}" >> ../artifacts/build-info.txt
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: Firmware-${{ github.run_number }}
+        name: Firmware-${{ github.run_number }}-${{ github.run_attempt }}
         path: artifacts
         retention-days: 30
 
     - name: Build report
       if: always()
       run: |
-        echo "=== Build Report ==="
-        echo "Status: ${{ job.status }}"
-        echo "Source: ${{ env.SOURCE_URL }}"
-        echo "Config: ${{ github.event.inputs.config_profile }}"
+        echo "=== 构建报告 ==="
+        echo "状态: ${{ job.status }}"
+        echo "源码: ${{ env.SOURCE_URL }}"
+        echo "配置: ${{ github.event.inputs.config_profile }}"
+        echo "运行ID: ${{ github.run_id }}"
+        echo "尝试: ${{ github.run_attempt }}"
         if [ "${{ job.status }}" = "success" ]; then
-          echo "Build successful!"
+          echo "✅ 构建成功!"
+          echo "编译时长: ${{ env.BUILD_DURATION }} 秒"
         else
-          echo "Build failed - check compilation logs for details"
+          echo "❌ 构建失败"
+          echo "请检查编译日志获取详细信息"
         fi
