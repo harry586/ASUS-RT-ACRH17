@@ -66,42 +66,59 @@ jobs:
       id: source-config
       run: |
         echo "正在解析源码配置..."
+        
+        # 检查当前目录下的 firmware-config 目录
         if [ ! -d "firmware-config" ]; then
           echo "❌ 错误: firmware-config 目录不存在"
-          echo "请确保仓库中有 firmware-config 目录"
-          exit 1
-        fi
-        cd firmware-config
-        echo "进入 firmware-config 目录"
-        if [ ! -f "repositories.json" ]; then
-          echo "❌ 错误: repositories.json 文件不存在"
-          echo "请在 firmware-config 目录下创建 repositories.json 文件"
-          echo "当前 firmware-config 目录内容:"
+          echo "当前目录内容:"
           ls -la
           exit 1
         fi
+        
+        # 检查 repositories.json 文件是否存在
+        if [ ! -f "firmware-config/repositories.json" ]; then
+          echo "❌ 错误: repositories.json 文件不存在"
+          echo "请在 firmware-config 目录下创建 repositories.json 文件"
+          echo "当前 firmware-config 目录内容:"
+          ls -la firmware-config/
+          exit 1
+        fi
+        
         echo "✅ 找到 repositories.json 文件"
+        
+        # 获取用户选择的源码库预设
         PRESET="${{ github.event.inputs.source_preset }}"
-        SOURCE_URL=$(jq -r ".repositories.$PRESET.url // empty" repositories.json)
-        DESCRIPTION=$(jq -r ".repositories.$PRESET.description // empty" repositories.json)
+        
+        # 从repositories.json中提取源码URL和描述
+        SOURCE_URL=$(jq -r ".repositories.$PRESET.url // empty" firmware-config/repositories.json)
+        DESCRIPTION=$(jq -r ".repositories.$PRESET.description // empty" firmware-config/repositories.json)
+        
+        # 分支处理逻辑：auto模式使用推荐分支，否则使用用户指定分支
         BRANCH="${{ github.event.inputs.source_branch }}"
         if [ "$BRANCH" = "auto" ]; then
-          BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch // \"main\"" repositories.json)
+          BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch // \"main\"" firmware-config/repositories.json)
           echo "自动选择推荐分支: $BRANCH"
         fi
+        
+        # 验证配置数据是否有效
         if [ -z "$SOURCE_URL" ]; then
           echo "❌ 错误: 无法从repositories.json获取源码URL，请检查$PRESET配置"
           echo "repositories.json 内容:"
-          cat repositories.json
+          cat firmware-config/repositories.json
           exit 1
         fi
+        
         if [ -z "$BRANCH" ]; then
           echo "❌ 错误: 无法获取源码分支"
           exit 1
         fi
+        
+        # 显示成功信息
         echo "✅ 源码库: $PRESET - $DESCRIPTION"
         echo "✅ 仓库URL: $SOURCE_URL"
         echo "✅ 使用分支: $BRANCH"
+        
+        # 设置环境变量供后续步骤使用
         echo "SOURCE_URL=$SOURCE_URL" >> $GITHUB_ENV
         echo "SOURCE_BRANCH=$BRANCH" >> $GITHUB_ENV
 
@@ -115,7 +132,6 @@ jobs:
     - name: "📥 获取源代码"
       run: |
         echo "正在克隆源码仓库: ${{ env.SOURCE_URL }}"
-        echo "使用分支: ${{ env.SOURCE_BRANCH }}"
         git clone --depth 1 --branch "${{ env.SOURCE_BRANCH }}" "${{ env.SOURCE_URL }}" source
         echo "✅ 源码克隆完成"
 
@@ -132,44 +148,47 @@ jobs:
         cd source
         CONFIG_FILE="../firmware-config/${{ github.event.inputs.config_profile }}"
         echo "正在应用配置文件: $CONFIG_FILE"
+        
         if [ ! -f "$CONFIG_FILE" ]; then
           echo "❌ 错误: 配置文件不存在: $CONFIG_FILE"
-          echo "💡 请查看 firmware-config/configs-list.md 获取可用配置文件列表"
-          echo "当前 configs 目录内容:"
-          ls -la ../firmware-config/configs/ || echo "configs 目录不存在"
           exit 1
         fi
+        
         cp "$CONFIG_FILE" .config
-        echo "✅ 配置文件应用完成: ${{ github.event.inputs.config_profile }}"
+        echo "✅ 配置文件应用完成"
 
     - name: "📦 处理预编译IPK包"
       if: github.event.inputs.enable_custom_features == 'true'
       run: |
         cd source
         IPK_DIR="../firmware-config/custom-features/prebuilt-ipks"
+        
         if [ ! -d "$IPK_DIR" ]; then
           echo "ℹ️ 预编译IPK包目录不存在: $IPK_DIR"
           exit 0
         fi
+        
         echo "🔍 查找预编译IPK包..."
         IPK_FILES=$(find "$IPK_DIR" -name "*.ipk" -type f)
+        
         if [ -z "$IPK_FILES" ]; then
           echo "ℹ️ 未找到预编译IPK包"
           exit 0
         fi
+        
         echo "找到以下IPK包:"
         echo "$IPK_FILES"
+        
         mkdir -p package/base-files/files/usr/lib/opkg/custom
+        
         for ipk in $IPK_FILES; do
           echo "📥 复制IPK包: $(basename "$ipk")"
           cp "$ipk" package/base-files/files/usr/lib/opkg/custom/
         done
+        
         mkdir -p package/base-files/files/etc/init.d
-        # 使用echo创建安装脚本，避免heredoc问题
         echo '#!/bin/sh /etc/rc.common' > package/base-files/files/etc/init.d/custom-ipk-install
-        echo '' >> package/base-files/files/etc/init.d/custom-ipk-install
         echo 'START=99' >> package/base-files/files/etc/init.d/custom-ipk-install
-        echo '' >> package/base-files/files/etc/init.d/custom-ipk-install
         echo 'start() {' >> package/base-files/files/etc/init.d/custom-ipk-install
         echo '    echo "正在安装自定义IPK包..."' >> package/base-files/files/etc/init.d/custom-ipk-install
         echo '    for ipk in /usr/lib/opkg/custom/*.ipk; do' >> package/base-files/files/etc/init.d/custom-ipk-install
@@ -180,12 +199,15 @@ jobs:
         echo '    done' >> package/base-files/files/etc/init.d/custom-ipk-install
         echo '    echo "自定义IPK包安装完成"' >> package/base-files/files/etc/init.d/custom-ipk-install
         echo '}' >> package/base-files/files/etc/init.d/custom-ipk-install
+        
         chmod +x package/base-files/files/etc/init.d/custom-ipk-install
+        
         if [ -f "package/base-files/files/etc/rc.local" ]; then
           if ! grep -q "custom-ipk-install" package/base-files/files/etc/rc.local; then
             echo "/etc/init.d/custom-ipk-install start" >> package/base-files/files/etc/rc.local
           fi
         fi
+        
         echo "✅ 预编译IPK包处理完成"
         echo "📊 共处理 $(echo "$IPK_FILES" | wc -l) 个IPK包"
 
@@ -194,17 +216,22 @@ jobs:
       run: |
         cd source
         SCRIPTS_DIR="../firmware-config/custom-features/scripts"
+        
         if [ ! -d "$SCRIPTS_DIR" ]; then
           echo "ℹ️ 自定义脚本目录不存在: $SCRIPTS_DIR"
           exit 0
         fi
+        
         SCRIPTS=$(find "$SCRIPTS_DIR" -name "*.sh" -type f | sort)
+        
         if [ -z "$SCRIPTS" ]; then
           echo "ℹ️ 未找到任何脚本文件"
           exit 0
         fi
+        
         echo "找到以下脚本文件:"
         echo "$SCRIPTS"
+        
         for script in $SCRIPTS; do
           echo "执行脚本: $(basename "$script")"
           chmod +x "$script"
@@ -215,6 +242,7 @@ jobs:
             exit 1
           fi
         done
+        
         echo "✅ 所有自定义脚本执行完成"
 
     - name: "🔍 验证配置"
@@ -223,19 +251,6 @@ jobs:
         echo "验证配置文件..."
         make defconfig
         echo "✅ 配置验证完成"
-
-    - name: "🔍 系统诊断"
-      run: |
-        echo "=== 系统资源诊断 ==="
-        echo "磁盘空间:"
-        df -h
-        echo "内存使用:"
-        free -h
-        echo "CPU核心数:"
-        nproc
-        echo "终端环境: TERM=$TERM"
-        echo "=== 自定义功能状态 ==="
-        echo "启用自定义功能: ${{ github.event.inputs.enable_custom_features }}"
 
     - name: "🏗️ 编译固件"
       timeout-minutes: 180
@@ -272,8 +287,6 @@ jobs:
         if [ -n "$FIRMWARE_FILES" ]; then
           echo "✅ 生成的固件文件:"
           echo "$FIRMWARE_FILES"
-          echo "文件大小:"
-          ls -lh $(echo "$FIRMWARE_FILES" | head -1) 2>/dev/null || echo "无法获取文件大小"
         else
           echo "⚠️ 未找到标准固件文件"
           find bin/ -type f 2>/dev/null | head -20 || echo "bin目录不存在"
