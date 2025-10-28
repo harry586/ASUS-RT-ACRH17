@@ -37,7 +37,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 150
     
     steps:
     - name: Checkout config repository
@@ -119,6 +119,8 @@ jobs:
         echo "=== 配置验证 ==="
         echo "检查 DNSMasq 配置:"
         grep -i "dnsmasq" .config || echo "未找到 DNSMasq 配置"
+        echo "检查 KMS 服务已禁用:"
+        grep -E "(minidlna|ffmpeg|ffprobe)" .config || echo "KMS 服务已正确禁用"
         echo "配置文件行数:"
         wc -l .config
         make defconfig
@@ -139,12 +141,13 @@ jobs:
         uname -a
 
     - name: Compile firmware
-      timeout-minutes: 180
+      timeout-minutes: 150
       run: |
         cd source
         
         START_TIME=$(date +%s)
         echo "开始编译固件..."
+        echo "注意: KMS 媒体服务已禁用，固件体积更小，编译更快"
         
         if [ "${{ github.event.inputs.enable_debug }}" = "true" ]; then
           echo "调试模式: 使用详细输出"
@@ -169,6 +172,8 @@ jobs:
         if [ -n "$FIRMWARE_FILES" ]; then
           echo "找到固件文件:"
           echo "$FIRMWARE_FILES"
+          echo "固件大小:"
+          ls -lh $(find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.trx" 2>/dev/null | head -1) 2>/dev/null || echo "无法获取文件大小"
         else
           echo "未找到标准固件文件"
           echo "bin/targets 中的可用文件:"
@@ -186,6 +191,7 @@ jobs:
         echo "时间: $(date)" >> ../artifacts/build-info.txt
         echo "编译时长: ${{ env.BUILD_DURATION }} 秒" >> ../artifacts/build-info.txt
         echo "GitHub Run ID: ${{ github.run_id }}" >> ../artifacts/build-info.txt
+        echo "特性: 禁用KMS媒体服务，优化编译" >> ../artifacts/build-info.txt
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -206,6 +212,7 @@ jobs:
         if [ "${{ job.status }}" = "success" ]; then
           echo "✅ 构建成功!"
           echo "编译时长: ${{ env.BUILD_DURATION }} 秒"
+          echo "🎯 特性: 禁用KMS媒体服务，固件体积更小"
         else
           echo "❌ 构建失败"
           echo "请检查编译日志获取详细信息"
