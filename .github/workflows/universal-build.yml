@@ -18,7 +18,7 @@ on:
         default: 'auto'
         type: string
       config_profile:
-        description: '设备配置文件路径 - 查看 configs-list.md 获取可用文件列表'
+        description: '设备配置文件路径 - 查看 firmware-config/configs-list.md 获取可用文件列表'
         required: true
         type: string
         default: 'configs/.config_rt-ac42u_immortalwrt'
@@ -47,20 +47,32 @@ jobs:
     timeout-minutes: 180
     
     steps:
-    - name: "📥 检出仓库"
+    - name: "📥 检出配置仓库"
       uses: actions/checkout@v4
+      with:
+        path: firmware-config
+
+    - name: "🔍 检查目录结构"
+      run: |
+        echo "=== 当前目录结构 ==="
+        pwd
+        ls -la
+        echo "=== firmware-config 目录内容 ==="
+        ls -la firmware-config/
+        echo "=== 检查 repositories.json ==="
+        find firmware-config -name "repositories.json" -type f 2>/dev/null || echo "未找到 repositories.json 文件"
 
     - name: "🔧 解析源码配置"
       id: source-config
       run: |
         echo "正在解析源码配置..."
         
-        # 检查 repositories.json 文件是否存在
-        if [ ! -f "repositories.json" ]; then
-          echo "❌ 错误: repositories.json 文件不存在"
-          echo "请在仓库根目录下创建 repositories.json 文件"
-          echo "当前目录内容:"
-          ls -la
+        # 检查 firmware-config 目录中的 repositories.json
+        if [ ! -f "firmware-config/repositories.json" ]; then
+          echo "❌ 错误: repositories.json 文件不存在于 firmware-config 目录中"
+          echo "请在 firmware-config 目录下创建 repositories.json 文件"
+          echo "当前 firmware-config 目录内容:"
+          ls -la firmware-config/
           exit 1
         fi
         
@@ -70,13 +82,13 @@ jobs:
         PRESET="${{ github.event.inputs.source_preset }}"
         
         # 从repositories.json中提取源码URL和描述
-        SOURCE_URL=$(jq -r ".repositories.$PRESET.url // empty" repositories.json)
-        DESCRIPTION=$(jq -r ".repositories.$PRESET.description // empty" repositories.json)
+        SOURCE_URL=$(jq -r ".repositories.$PRESET.url // empty" firmware-config/repositories.json)
+        DESCRIPTION=$(jq -r ".repositories.$PRESET.description // empty" firmware-config/repositories.json)
         
         # 分支处理逻辑：auto模式使用推荐分支，否则使用用户指定分支
         BRANCH="${{ github.event.inputs.source_branch }}"
         if [ "$BRANCH" = "auto" ]; then
-          BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch // \"main\"" repositories.json)
+          BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch // \"main\"" firmware-config/repositories.json)
           echo "自动选择推荐分支: $BRANCH"
         fi
         
@@ -84,7 +96,7 @@ jobs:
         if [ -z "$SOURCE_URL" ]; then
           echo "❌ 错误: 无法从repositories.json获取源码URL，请检查$PRESET配置"
           echo "repositories.json 内容:"
-          cat repositories.json
+          cat firmware-config/repositories.json
           exit 1
         fi
         
@@ -112,6 +124,7 @@ jobs:
     - name: "📥 获取源代码"
       run: |
         echo "正在克隆源码仓库: ${{ env.SOURCE_URL }}"
+        echo "使用分支: ${{ env.SOURCE_BRANCH }}"
         git clone --depth 1 --branch "${{ env.SOURCE_BRANCH }}" "${{ env.SOURCE_URL }}" source
         echo "✅ 源码克隆完成"
 
@@ -126,14 +139,14 @@ jobs:
     - name: "🎨 应用自定义配置"
       run: |
         cd source
-        CONFIG_FILE="../${{ github.event.inputs.config_profile }}"
+        CONFIG_FILE="../firmware-config/${{ github.event.inputs.config_profile }}"
         echo "正在应用配置文件: $CONFIG_FILE"
         
         if [ ! -f "$CONFIG_FILE" ]; then
           echo "❌ 错误: 配置文件不存在: $CONFIG_FILE"
-          echo "💡 请确保配置文件存在于 configs/ 目录中"
-          echo "当前 configs 目录内容:"
-          ls -la ../configs/ 2>/dev/null || echo "configs 目录不存在"
+          echo "💡 请查看 firmware-config/configs-list.md 获取可用配置文件列表"
+          echo "当前 firmware-config/configs 目录内容:"
+          ls -la ../firmware-config/configs/ || echo "configs 目录不存在"
           exit 1
         fi
         
@@ -144,7 +157,7 @@ jobs:
       if: github.event.inputs.enable_custom_features == 'true'
       run: |
         cd source
-        IPK_DIR="../custom-features/prebuilt-ipks"
+        IPK_DIR="../firmware-config/custom-features/prebuilt-ipks"
         
         if [ ! -d "$IPK_DIR" ]; then
           echo "ℹ️ 预编译IPK包目录不存在: $IPK_DIR"
@@ -198,7 +211,7 @@ jobs:
       if: github.event.inputs.enable_custom_features == 'true'
       run: |
         cd source
-        SCRIPTS_DIR="../custom-features/scripts"
+        SCRIPTS_DIR="../firmware-config/custom-features/scripts"
         
         if [ ! -d "$SCRIPTS_DIR" ]; then
           echo "ℹ️ 自定义脚本目录不存在: $SCRIPTS_DIR"
