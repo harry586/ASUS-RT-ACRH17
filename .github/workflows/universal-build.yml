@@ -28,7 +28,7 @@ on:
       enable_debug:
         description: '启用调试模式'
         required: false
-        default: false
+        default: true
         type: boolean
 
 env:
@@ -113,17 +113,25 @@ jobs:
         cp "$CONFIG_FILE" .config
         echo "配置文件应用成功"
 
-    - name: Verify configuration
+    - name: Verify and fix conflicts
       run: |
         cd source
-        echo "=== 配置验证 ==="
+        echo "=== 配置验证和冲突修复 ==="
+        
+        # 检查已知冲突
         echo "检查 DNSMasq 配置:"
         grep -i "dnsmasq" .config || echo "未找到 DNSMasq 配置"
-        echo "检查 KMS 服务已禁用:"
+        
+        echo "检查无线驱动配置:"
+        grep -E "(ath10k|ath10k-ct)" .config || echo "未找到无线驱动配置"
+        
+        echo "检查 KMS 服务配置:"
         grep -E "(minidlna|ffmpeg|ffprobe)" .config || echo "KMS 服务已正确禁用"
-        echo "配置文件行数:"
-        wc -l .config
+        
+        # 应用修复
+        echo "应用配置修复..."
         make defconfig
+        
         echo "配置验证完成"
 
     - name: System diagnostics
@@ -137,8 +145,9 @@ jobs:
         free -h
         echo "CPU 核心数:"
         nproc
-        echo "系统信息:"
-        uname -a
+        echo "配置摘要:"
+        grep -c "=y" .config | xargs echo "已启用包数量:"
+        grep -c "is not set" .config | xargs echo "已禁用包数量:"
 
     - name: Compile firmware
       timeout-minutes: 150
@@ -147,13 +156,16 @@ jobs:
         
         START_TIME=$(date +%s)
         echo "开始编译固件..."
-        echo "注意: KMS 媒体服务已禁用，固件体积更小，编译更快"
+        echo "已修复的冲突:"
+        echo "  - DNSMasq: 使用 dnsmasq-full 替代 dnsmasq"
+        echo "  - 无线驱动: 使用 kmod-ath10k-ct 替代 kmod-ath10k"
+        echo "  - 媒体服务: 禁用 KMS 服务减小体积"
         
         if [ "${{ github.event.inputs.enable_debug }}" = "true" ]; then
-          echo "调试模式: 使用详细输出"
-          make V=s -j$(($(nproc) + 1))
+          echo "🔍 调试模式: 使用详细输出和单线程编译"
+          make V=s -j1
         else
-          echo "普通模式: 使用并行编译"
+          echo "⚡ 普通模式: 使用并行编译加速"
           make -j$(($(nproc) + 1)) || make -j1 V=s
         fi
         
@@ -191,7 +203,7 @@ jobs:
         echo "时间: $(date)" >> ../artifacts/build-info.txt
         echo "编译时长: ${{ env.BUILD_DURATION }} 秒" >> ../artifacts/build-info.txt
         echo "GitHub Run ID: ${{ github.run_id }}" >> ../artifacts/build-info.txt
-        echo "特性: 禁用KMS媒体服务，优化编译" >> ../artifacts/build-info.txt
+        echo "修复的冲突: DNSMasq, 无线驱动, KMS媒体服务" >> ../artifacts/build-info.txt
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -212,7 +224,10 @@ jobs:
         if [ "${{ job.status }}" = "success" ]; then
           echo "✅ 构建成功!"
           echo "编译时长: ${{ env.BUILD_DURATION }} 秒"
-          echo "🎯 特性: 禁用KMS媒体服务，固件体积更小"
+          echo "🎯 已修复的冲突:"
+          echo "   - DNSMasq 冲突"
+          echo "   - 无线驱动冲突" 
+          echo "   - KMS 媒体服务"
         else
           echo "❌ 构建失败"
           echo "请检查编译日志获取详细信息"
