@@ -50,16 +50,6 @@ jobs:
     - name: "📥 检出仓库"
       uses: actions/checkout@v4
 
-    - name: "🔍 检查目录结构"
-      run: |
-        echo "=== 当前目录结构 ==="
-        pwd
-        ls -la
-        echo "=== 检查 repositories.json ==="
-        find . -name "repositories.json" -type f 2>/dev/null || echo "未找到 repositories.json 文件"
-        echo "=== 检查 firmware-config 目录 ==="
-        ls -la firmware-config/ 2>/dev/null || echo "firmware-config 目录不存在"
-
     - name: "🔧 解析源码配置"
       id: source-config
       run: |
@@ -141,7 +131,7 @@ jobs:
         
         if [ ! -f "$CONFIG_FILE" ]; then
           echo "❌ 错误: 配置文件不存在: $CONFIG_FILE"
-          echo "💡 请查看 configs-list.md 获取可用配置文件列表"
+          echo "💡 请确保配置文件存在于 configs/ 目录中"
           echo "当前 configs 目录内容:"
           ls -la ../configs/ 2>/dev/null || echo "configs 目录不存在"
           exit 1
