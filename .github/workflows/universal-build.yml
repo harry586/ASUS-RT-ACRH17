@@ -24,19 +24,10 @@ on:
         required: true
         type: string
         default: 'configs/.config_rt-ac42u_immortalwrt'
-      
-      build_strategy:
-        description: '编译策略'
-        required: true
-        type: choice
-        options:
-          - fast
-          - robust
-          - minimal
-        default: 'robust'
 
 env:
   TZ: Asia/Shanghai
+  TERM: linux
 
 jobs:
   build:
@@ -87,7 +78,7 @@ jobs:
     - name: Prepare build environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip python3-serial python3-setuptools rsync unzip zlib1g-dev file wget jq
+        sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip python3-serial python3-setuptools rsync unzip zlib1g-dev file wget jq ncurses-term
         echo "构建环境准备完成"
 
     - name: Get source code
@@ -119,6 +110,21 @@ jobs:
         cp "$CONFIG_FILE" .config
         echo "配置文件应用成功"
 
+    - name: Fix terminal and configure
+      run: |
+        cd source
+        echo "修复终端环境问题..."
+        
+        # 设置终端环境变量
+        export TERM=linux
+        export TERMINFO=/usr/share/terminfo
+        
+        # 直接使用现有配置，跳过交互式配置
+        echo "应用配置..."
+        make defconfig CONFIG_TERM=linux
+        
+        echo "配置完成"
+
     - name: System diagnostics
       run: |
         echo "=== 系统诊断 ==="
@@ -128,56 +134,27 @@ jobs:
         free -h
         echo "CPU 核心数:"
         nproc
-        echo "系统信息:"
-        uname -a
+        echo "终端环境:"
+        echo "TERM=$TERM"
 
-    - name: Build toolchain first
+    - name: Build with fixed environment
       run: |
         cd source
-        echo "=== 第一步: 编译工具链 ==="
-        echo "这可能需要一些时间，请耐心等待..."
+        echo "开始编译固件..."
         
-        # 先编译工具链
-        make toolchain/compile -j2 V=s
-        echo "工具链编译完成"
-
-    - name: Build kernel and packages
-      run: |
-        cd source
-        echo "=== 第二步: 编译内核和软件包 ==="
+        # 设置编译环境
+        export TERM=linux
+        export FORCE_UNSAFE_CONFIGURE=1
         
-        STRATEGY="${{ github.event.inputs.build_strategy }}"
-        echo "使用编译策略: $STRATEGY"
+        START_TIME=$(date +%s)
         
-        case $STRATEGY in
-          "fast")
-            echo "快速模式: 使用并行编译"
-            make -j$(nproc) || make -j2 V=s
-            ;;
-          "robust")
-            echo "稳健模式: 分阶段编译"
-            # 编译内核
-            make target/compile -j2 V=s
-            # 编译软件包
-            make package/compile -j2 V=s
-            # 最终安装
-            make package/install -j2 V=s
-            make target/install -j2 V=s
-            ;;
-          "minimal")
-            echo "最小模式: 单线程详细编译"
-            make V=s -j1
-            ;;
-        esac
+        echo "编译策略: 稳健模式 (2线程)"
+        make -j2 V=s
         
-        echo "内核和软件包编译完成"
-
-    - name: Final build
-      run: |
-        cd source
-        echo "=== 第三步: 最终构建 ==="
-        make -j2
-        echo "最终构建完成"
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+        echo "编译完成，耗时: ${DURATION} 秒"
+        echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
 
     - name: Collect build artifacts
       run: |
@@ -206,7 +183,7 @@ jobs:
         echo "分支: ${{ env.SOURCE_BRANCH }}" >> ../artifacts/build-info.txt
         echo "配置: ${{ github.event.inputs.config_profile }}" >> ../artifacts/build-info.txt
         echo "时间: $(date)" >> ../artifacts/build-info.txt
-        echo "策略: ${{ github.event.inputs.build_strategy }}" >> ../artifacts/build-info.txt
+        echo "编译时长: ${{ env.BUILD_DURATION }} 秒" >> ../artifacts/build-info.txt
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -215,16 +192,6 @@ jobs:
         path: artifacts
         retention-days: 30
 
-    - name: Upload build logs
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: Build-Logs-${{ github.run_number }}
-        path: |
-          source/build.log
-          source/tmp/
-        retention-days: 7
-
     - name: Build report
       if: always()
       run: |
@@ -232,15 +199,12 @@ jobs:
         echo "状态: ${{ job.status }}"
         echo "源码: ${{ env.SOURCE_URL }}"
         echo "配置: ${{ github.event.inputs.config_profile }}"
-        echo "策略: ${{ github.event.inputs.build_strategy }}"
         echo "运行ID: ${{ github.run_id }}"
         echo "尝试: ${{ github.run_attempt }}"
         if [ "${{ job.status }}" = "success" ]; then
           echo "✅ 构建成功!"
+          echo "编译时长: ${{ env.BUILD_DURATION }} 秒"
         else
           echo "❌ 构建失败"
-          echo "💡 建议:"
-          echo "   - 下载完整日志查看详细错误"
-          echo "   - 尝试使用 'minimal' 编译策略"
-          echo "   - 检查配置文件是否有冲突"
+          echo "💡 建议: 检查编译日志中的详细错误信息"
         fi
