@@ -25,11 +25,15 @@ on:
         type: string
         default: 'configs/.config_rt-ac42u_immortalwrt'
       
-      enable_debug:
-        description: '启用调试模式'
-        required: false
-        default: true
-        type: boolean
+      build_strategy:
+        description: '编译策略'
+        required: true
+        type: choice
+        options:
+          - fast
+          - robust
+          - minimal
+        default: 'robust'
 
 env:
   TZ: Asia/Shanghai
@@ -37,7 +41,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 150
+    timeout-minutes: 180
     
     steps:
     - name: Checkout config repository
@@ -84,11 +88,13 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip python3-serial python3-setuptools rsync unzip zlib1g-dev file wget jq
+        echo "构建环境准备完成"
 
     - name: Get source code
       run: |
         echo "克隆源码仓库: ${{ env.SOURCE_URL }}"
         git clone --depth 1 --branch "${{ env.SOURCE_BRANCH }}" "${{ env.SOURCE_URL }}" source
+        echo "源码克隆完成"
 
     - name: Initialize source
       run: |
@@ -113,31 +119,8 @@ jobs:
         cp "$CONFIG_FILE" .config
         echo "配置文件应用成功"
 
-    - name: Verify and fix conflicts
-      run: |
-        cd source
-        echo "=== 配置验证和冲突修复 ==="
-        
-        # 检查已知冲突
-        echo "检查 DNSMasq 配置:"
-        grep -i "dnsmasq" .config || echo "未找到 DNSMasq 配置"
-        
-        echo "检查无线驱动配置:"
-        grep -E "(ath10k|ath10k-ct)" .config || echo "未找到无线驱动配置"
-        
-        echo "检查 KMS 服务配置:"
-        grep -E "(minidlna|ffmpeg|ffprobe)" .config || echo "KMS 服务已正确禁用"
-        
-        # 应用修复
-        echo "应用配置修复..."
-        make defconfig
-        
-        echo "配置验证完成"
-
     - name: System diagnostics
-      if: github.event.inputs.enable_debug == 'true'
       run: |
-        cd source
         echo "=== 系统诊断 ==="
         echo "磁盘空间:"
         df -h
@@ -145,34 +128,56 @@ jobs:
         free -h
         echo "CPU 核心数:"
         nproc
-        echo "配置摘要:"
-        grep -c "=y" .config | xargs echo "已启用包数量:"
-        grep -c "is not set" .config | xargs echo "已禁用包数量:"
+        echo "系统信息:"
+        uname -a
 
-    - name: Compile firmware
-      timeout-minutes: 150
+    - name: Build toolchain first
       run: |
         cd source
+        echo "=== 第一步: 编译工具链 ==="
+        echo "这可能需要一些时间，请耐心等待..."
         
-        START_TIME=$(date +%s)
-        echo "开始编译固件..."
-        echo "已修复的冲突:"
-        echo "  - DNSMasq: 使用 dnsmasq-full 替代 dnsmasq"
-        echo "  - 无线驱动: 使用 kmod-ath10k-ct 替代 kmod-ath10k"
-        echo "  - 媒体服务: 禁用 KMS 服务减小体积"
+        # 先编译工具链
+        make toolchain/compile -j2 V=s
+        echo "工具链编译完成"
+
+    - name: Build kernel and packages
+      run: |
+        cd source
+        echo "=== 第二步: 编译内核和软件包 ==="
         
-        if [ "${{ github.event.inputs.enable_debug }}" = "true" ]; then
-          echo "🔍 调试模式: 使用详细输出和单线程编译"
-          make V=s -j1
-        else
-          echo "⚡ 普通模式: 使用并行编译加速"
-          make -j$(($(nproc) + 1)) || make -j1 V=s
-        fi
+        STRATEGY="${{ github.event.inputs.build_strategy }}"
+        echo "使用编译策略: $STRATEGY"
         
-        END_TIME=$(date +%s)
-        DURATION=$((END_TIME - START_TIME))
-        echo "编译完成，耗时: ${DURATION} 秒"
-        echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
+        case $STRATEGY in
+          "fast")
+            echo "快速模式: 使用并行编译"
+            make -j$(nproc) || make -j2 V=s
+            ;;
+          "robust")
+            echo "稳健模式: 分阶段编译"
+            # 编译内核
+            make target/compile -j2 V=s
+            # 编译软件包
+            make package/compile -j2 V=s
+            # 最终安装
+            make package/install -j2 V=s
+            make target/install -j2 V=s
+            ;;
+          "minimal")
+            echo "最小模式: 单线程详细编译"
+            make V=s -j1
+            ;;
+        esac
+        
+        echo "内核和软件包编译完成"
+
+    - name: Final build
+      run: |
+        cd source
+        echo "=== 第三步: 最终构建 ==="
+        make -j2
+        echo "最终构建完成"
 
     - name: Collect build artifacts
       run: |
@@ -182,12 +187,12 @@ jobs:
         # 查找固件文件
         FIRMWARE_FILES=$(find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.trx" 2>/dev/null | head -10)
         if [ -n "$FIRMWARE_FILES" ]; then
-          echo "找到固件文件:"
+          echo "✅ 找到固件文件:"
           echo "$FIRMWARE_FILES"
           echo "固件大小:"
           ls -lh $(find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.trx" 2>/dev/null | head -1) 2>/dev/null || echo "无法获取文件大小"
         else
-          echo "未找到标准固件文件"
+          echo "❌ 未找到标准固件文件"
           echo "bin/targets 中的可用文件:"
           find bin/targets -type f 2>/dev/null | head -20
         fi
@@ -201,9 +206,7 @@ jobs:
         echo "分支: ${{ env.SOURCE_BRANCH }}" >> ../artifacts/build-info.txt
         echo "配置: ${{ github.event.inputs.config_profile }}" >> ../artifacts/build-info.txt
         echo "时间: $(date)" >> ../artifacts/build-info.txt
-        echo "编译时长: ${{ env.BUILD_DURATION }} 秒" >> ../artifacts/build-info.txt
-        echo "GitHub Run ID: ${{ github.run_id }}" >> ../artifacts/build-info.txt
-        echo "修复的冲突: DNSMasq, 无线驱动, KMS媒体服务" >> ../artifacts/build-info.txt
+        echo "策略: ${{ github.event.inputs.build_strategy }}" >> ../artifacts/build-info.txt
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -212,6 +215,16 @@ jobs:
         path: artifacts
         retention-days: 30
 
+    - name: Upload build logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: Build-Logs-${{ github.run_number }}
+        path: |
+          source/build.log
+          source/tmp/
+        retention-days: 7
+
     - name: Build report
       if: always()
       run: |
@@ -219,16 +232,15 @@ jobs:
         echo "状态: ${{ job.status }}"
         echo "源码: ${{ env.SOURCE_URL }}"
         echo "配置: ${{ github.event.inputs.config_profile }}"
+        echo "策略: ${{ github.event.inputs.build_strategy }}"
         echo "运行ID: ${{ github.run_id }}"
         echo "尝试: ${{ github.run_attempt }}"
         if [ "${{ job.status }}" = "success" ]; then
           echo "✅ 构建成功!"
-          echo "编译时长: ${{ env.BUILD_DURATION }} 秒"
-          echo "🎯 已修复的冲突:"
-          echo "   - DNSMasq 冲突"
-          echo "   - 无线驱动冲突" 
-          echo "   - KMS 媒体服务"
         else
           echo "❌ 构建失败"
-          echo "请检查编译日志获取详细信息"
+          echo "💡 建议:"
+          echo "   - 下载完整日志查看详细错误"
+          echo "   - 尝试使用 'minimal' 编译策略"
+          echo "   - 检查配置文件是否有冲突"
         fi
