@@ -47,10 +47,10 @@ jobs:
     timeout-minutes: 180
     
     steps:
-    - name: "📥 检出配置仓库"
+    - name: "📥 检出仓库"
       uses: actions/checkout@v4
       with:
-        path: firmware-config
+        token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: "🔍 检查目录结构"
       run: |
@@ -60,19 +60,23 @@ jobs:
         echo "=== firmware-config 目录内容 ==="
         ls -la firmware-config/
         echo "=== 检查 repositories.json ==="
-        find firmware-config -name "repositories.json" -type f 2>/dev/null || echo "未找到 repositories.json 文件"
+        if [ -f "firmware-config/repositories.json" ]; then
+          echo "✅ repositories.json 存在"
+          cat firmware-config/repositories.json
+        else
+          echo "❌ repositories.json 不存在"
+          echo "请在 firmware-config 目录下创建 repositories.json 文件"
+          exit 1
+        fi
 
     - name: "🔧 解析源码配置"
       id: source-config
       run: |
         echo "正在解析源码配置..."
         
-        # 检查 firmware-config 目录中的 repositories.json
+        # 检查 repositories.json 文件是否存在
         if [ ! -f "firmware-config/repositories.json" ]; then
-          echo "❌ 错误: repositories.json 文件不存在于 firmware-config 目录中"
-          echo "请在 firmware-config 目录下创建 repositories.json 文件"
-          echo "当前 firmware-config 目录内容:"
-          ls -la firmware-config/
+          echo "❌ 错误: repositories.json 文件不存在"
           exit 1
         fi
         
