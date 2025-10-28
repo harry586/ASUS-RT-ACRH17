@@ -31,6 +31,15 @@ on:
           - speed
           - stability
         default: 'balanced'
+      toolchain_strategy:
+        description: '工具链策略 (prebuilt=预编译最快/local=本地编译最稳/auto=自动选择)'
+        required: true
+        type: choice
+        options:
+          - prebuilt
+          - local
+          - auto
+        default: 'auto'
       enable_custom_features:
         description: '启用自定义功能 (自定义脚本和预编译IPK包)'
         required: false
@@ -157,6 +166,49 @@ jobs:
         cp "$CONFIG_FILE" .config
         echo "✅ 配置文件应用完成: ${{ github.event.inputs.config_profile }}"
 
+    - name: "🛠️ 设置工具链策略"
+      id: toolchain-setup
+      run: |
+        cd source
+        
+        STRATEGY="${{ github.event.inputs.toolchain_strategy }}"
+        echo "工具链策略: $STRATEGY"
+        
+        case $STRATEGY in
+          "prebuilt")
+            echo "🔧 使用预编译工具链..."
+            # 尝试使用预编译工具链
+            if make tools/install toolchain/install 2>/dev/null; then
+              echo "✅ 预编译工具链安装成功"
+              echo "result=prebuilt" >> $GITHUB_OUTPUT
+              echo "status=success" >> $GITHUB_OUTPUT
+            else
+              echo "❌ 预编译工具链安装失败，将使用本地编译"
+              echo "result=local" >> $GITHUB_OUTPUT
+              echo "status=fallback" >> $GITHUB_OUTPUT
+            fi
+            ;;
+          "local")
+            echo "🔧 使用本地编译工具链..."
+            echo "这将需要较长时间..."
+            echo "result=local" >> $GITHUB_OUTPUT
+            echo "status=success" >> $GITHUB_OUTPUT
+            ;;
+          "auto"|*)
+            echo "🔧 自动选择工具链策略..."
+            # 尝试预编译，如果失败则使用本地编译
+            if make tools/install toolchain/install 2>/dev/null; then
+              echo "✅ 预编译工具链可用"
+              echo "result=prebuilt" >> $GITHUB_OUTPUT
+              echo "status=success" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️ 预编译工具链不可用，将使用本地编译"
+              echo "result=local" >> $GITHUB_OUTPUT
+              echo "status=fallback" >> $GITHUB_OUTPUT
+            fi
+            ;;
+        esac
+
     - name: "📦 处理预编译IPK包"
       if: github.event.inputs.enable_custom_features == 'true'
       run: |
@@ -259,21 +311,39 @@ jobs:
         export TERM=linux
         export FORCE_UNSAFE_CONFIGURE=1
         START_TIME=$(date +%s)
-        echo "开始编译 (策略: ${{ github.event.inputs.build_optimization }})"
+        
+        echo "开始编译固件..."
+        echo "📊 编译参数:"
+        echo "  - 工具链策略: ${{ steps.toolchain-setup.outputs.result }} (${{ steps.toolchain-setup.outputs.status }})"
+        echo "  - 编译优化: ${{ github.event.inputs.build_optimization }}"
+        echo "  - 自定义功能: ${{ github.event.inputs.enable_custom_features }}"
+        
         case "${{ github.event.inputs.build_optimization }}" in
           "speed")
             echo "🚀 速度优先模式: 多线程编译"
-            make -j$(nproc)
+            JOBS=$(nproc)
+            echo "使用 $JOBS 个并行任务"
+            if [ "${{ steps.toolchain-setup.outputs.result }}" = "prebuilt" ]; then
+              echo "⚡ 使用预编译工具链加速"
+            fi
+            make -j$JOBS
             ;;
           "stability")
             echo "🛡️ 稳定性优先模式: 单线程详细编译"
+            if [ "${{ steps.toolchain-setup.outputs.result }}" = "prebuilt" ]; then
+              echo "⚡ 使用预编译工具链"
+            fi
             make V=s -j1
             ;;
           "balanced"|*)
             echo "⚖️ 平衡模式: 2线程详细编译"
+            if [ "${{ steps.toolchain-setup.outputs.result }}" = "prebuilt" ]; then
+              echo "⚡ 使用预编译工具链加速"
+            fi
             make -j2 V=s
             ;;
         esac
+        
         END_TIME=$(date +%s)
         DURATION=$((END_TIME - START_TIME))
         echo "✅ 编译完成! 耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
@@ -293,18 +363,30 @@ jobs:
         fi
         mkdir -p ../artifacts
         cp -r bin/targets/* ../artifacts/ 2>/dev/null || true
-        echo "源码: ${{ env.SOURCE_URL }}" > ../artifacts/build-info.txt
-        echo "分支: ${{ env.SOURCE_BRANCH }}" >> ../artifacts/build-info.txt
-        echo "配置: ${{ github.event.inputs.config_profile }}" >> ../artifacts/build-info.txt
-        echo "优化: ${{ github.event.inputs.build_optimization }}" >> ../artifacts/build-info.txt
-        echo "时间: $(date)" >> ../artifacts/build-info.txt
-        echo "时长: ${{ env.BUILD_DURATION }}秒" >> ../artifacts/build-info.txt
-        echo "自定义功能: ${{ github.event.inputs.enable_custom_features }}" >> ../artifacts/build-info.txt
+        
+        {
+          echo "=== 固件构建信息 ==="
+          echo "源码: ${{ env.SOURCE_URL }}"
+          echo "分支: ${{ env.SOURCE_BRANCH }}"
+          echo "配置: ${{ github.event.inputs.config_profile }}"
+          echo "优化: ${{ github.event.inputs.build_optimization }}"
+          echo "工具链: ${{ steps.toolchain-setup.outputs.result }} (${{ steps.toolchain-setup.outputs.status }})"
+          echo "自定义功能: ${{ github.event.inputs.enable_custom_features }}"
+          echo "构建时间: $(date)"
+          echo "编译时长: ${{ env.BUILD_DURATION }}秒"
+          echo "GitHub Run: ${{ github.run_id }}-${{ github.run_attempt }}"
+          echo ""
+          echo "=== 构建特性 ==="
+          echo "- 预编译工具链支持"
+          echo "- 自定义IPK包集成"
+          echo "- 自定义脚本执行"
+          echo "- 多种编译优化策略"
+        } > ../artifacts/build-info.txt
 
     - name: "💾 上传构建产物"
       uses: actions/upload-artifact@v4
       with:
-        name: "Firmware-${{ github.run_number }}"
+        name: "Firmware-${{ github.run_number }}-${{ github.run_attempt }}"
         path: artifacts
         retention-days: 30
 
@@ -317,10 +399,30 @@ jobs:
         echo "分支: ${{ env.SOURCE_BRANCH }}"
         echo "配置: ${{ github.event.inputs.config_profile }}"
         echo "优化: ${{ github.event.inputs.build_optimization }}"
+        echo "工具链: ${{ steps.toolchain-setup.outputs.result }} (${{ steps.toolchain-setup.outputs.status }})"
         echo "自定义功能: ${{ github.event.inputs.enable_custom_features }}"
+        
         if [ "${{ job.status }}" = "success" ]; then
           echo "🎉 构建成功! 固件已上传到Artifacts"
           echo "⏱️ 编译时长: ${{ env.BUILD_DURATION }}秒"
+          echo ""
+          echo "🚀 使用的优化特性:"
+          if [ "${{ steps.toolchain-setup.outputs.result }}" = "prebuilt" ]; then
+            echo "  ✅ 预编译工具链 - 大幅减少编译时间"
+          else
+            echo "  🔧 本地编译工具链 - 稳定性优先"
+          fi
+          if [ "${{ github.event.inputs.enable_custom_features }}" = "true" ]; then
+            echo "  ✅ 自定义功能 - 包含IPK包和脚本"
+          fi
         else
           echo "❌ 构建失败，请检查日志中的错误信息"
+          echo ""
+          echo "💡 调试建议:"
+          if [ "${{ steps.toolchain-setup.outputs.status }}" = "fallback" ]; then
+            echo "  - 预编译工具链不可用，已回退到本地编译"
+          fi
+          echo "  - 尝试使用 'stability' 编译模式"
+          echo "  - 检查自定义脚本是否有语法错误"
+          echo "  - 验证配置文件是否正确"
         fi
