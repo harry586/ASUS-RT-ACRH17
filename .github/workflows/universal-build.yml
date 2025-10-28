@@ -24,6 +24,16 @@ on:
         required: true
         type: string
         default: 'configs/.config_rt-ac42u_immortalwrt'
+      
+      build_optimization:
+        description: '编译优化级别'
+        required: true
+        type: choice
+        options:
+          - balanced
+          - speed
+          - stability
+        default: 'balanced'
 
 env:
   TZ: Asia/Shanghai
@@ -32,7 +42,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 240  # 增加到4小时
     
     steps:
     - name: Checkout config repository
@@ -42,155 +52,136 @@ jobs:
       id: source-config
       run: |
         echo "检查固件配置目录..."
-        if [ ! -d "firmware-config" ]; then
-          echo "错误: firmware-config 目录未找到"
-          exit 1
-        fi
-        
-        echo "检查 repositories.json..."
-        if [ ! -f "firmware-config/repositories.json" ]; then
-          echo "错误: repositories.json 未找到"
-          exit 1
-        fi
-        
         PRESET="${{ github.event.inputs.source_preset }}"
         SOURCE_URL=$(jq -r ".repositories.$PRESET.url // empty" firmware-config/repositories.json)
-        DESCRIPTION=$(jq -r ".repositories.$PRESET.description // empty" firmware-config/repositories.json)
         
         BRANCH="${{ github.event.inputs.source_branch }}"
         if [ "$BRANCH" = "auto" ]; then
           BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch // \"main\"" firmware-config/repositories.json)
-          echo "自动选择分支: $BRANCH"
         fi
-        
-        if [ -z "$SOURCE_URL" ]; then
-          echo "错误: 无法从 repositories.json 获取源码 URL"
-          exit 1
-        fi
-        
-        echo "源码: $PRESET - $DESCRIPTION"
-        echo "URL: $SOURCE_URL"
-        echo "分支: $BRANCH"
         
         echo "SOURCE_URL=$SOURCE_URL" >> $GITHUB_ENV
         echo "SOURCE_BRANCH=$BRANCH" >> $GITHUB_ENV
+        echo "使用源码: $SOURCE_URL, 分支: $BRANCH"
 
     - name: Prepare build environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip python3-serial python3-setuptools rsync unzip zlib1g-dev file wget jq ncurses-term
+        sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip rsync unzip zlib1g-dev file wget jq ncurses-term
         echo "构建环境准备完成"
 
     - name: Get source code
       run: |
-        echo "克隆源码仓库: ${{ env.SOURCE_URL }}"
+        echo "克隆源码仓库..."
         git clone --depth 1 --branch "${{ env.SOURCE_BRANCH }}" "${{ env.SOURCE_URL }}" source
-        echo "源码克隆完成"
 
     - name: Initialize source
       run: |
         cd source
-        if [ -f "feeds.conf" ] || [ -f "feeds.conf.default" ]; then
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          echo "软件源更新完成"
-        fi
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
 
     - name: Apply configuration
       run: |
         cd source
-        CONFIG_FILE="../firmware-config/${{ github.event.inputs.config_profile }}"
-        echo "应用配置文件: $CONFIG_FILE"
-        
-        if [ ! -f "$CONFIG_FILE" ]; then
-          echo "错误: 配置文件未找到: $CONFIG_FILE"
-          exit 1
-        fi
-        
-        cp "$CONFIG_FILE" .config
-        echo "配置文件应用成功"
-
-    - name: Fix terminal and configure
-      run: |
-        cd source
-        echo "修复终端环境问题..."
-        
-        # 设置终端环境变量
-        export TERM=linux
-        export TERMINFO=/usr/share/terminfo
-        
-        # 直接使用现有配置，跳过交互式配置
-        echo "应用配置..."
-        make defconfig CONFIG_TERM=linux
-        
-        echo "配置完成"
+        cp "../firmware-config/${{ github.event.inputs.config_profile }}" .config
+        make defconfig
+        echo "配置应用完成"
 
     - name: System diagnostics
       run: |
-        echo "=== 系统诊断 ==="
+        echo "=== 系统资源诊断 ==="
         echo "磁盘空间:"
         df -h
-        echo "内存使用:"
+        echo "内存:"
         free -h
-        echo "CPU 核心数:"
+        echo "CPU:"
         nproc
-        echo "终端环境:"
-        echo "TERM=$TERM"
 
-    - name: Build with fixed environment
+    - name: Optimized build
+      timeout-minutes: 230
       run: |
         cd source
-        echo "开始编译固件..."
         
-        # 设置编译环境
+        # 设置环境
         export TERM=linux
         export FORCE_UNSAFE_CONFIGURE=1
         
         START_TIME=$(date +%s)
+        echo "开始编译 (开始时间: $(date))"
         
-        echo "编译策略: 稳健模式 (2线程)"
-        make -j2 V=s
+        # 根据优化级别选择编译策略
+        case "${{ github.event.inputs.build_optimization }}" in
+          "speed")
+            echo "速度优先: 使用多线程编译"
+            JOBS=$(nproc)
+            echo "使用 $JOBS 个并行任务"
+            make -j$JOBS
+            ;;
+          "stability")  
+            echo "稳定性优先: 使用单线程详细编译"
+            make V=s -j1
+            ;;
+          "balanced"|*)
+            echo "平衡模式: 使用2线程编译"
+            make -j2 V=s
+            ;;
+        esac
         
         END_TIME=$(date +%s)
         DURATION=$((END_TIME - START_TIME))
-        echo "编译完成，耗时: ${DURATION} 秒"
+        echo "编译完成，耗时: ${DURATION} 秒 ($(($DURATION/60)) 分钟)"
         echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
 
     - name: Collect build artifacts
+      if: success()
       run: |
         cd source
         echo "收集构建产物..."
         
         # 查找固件文件
-        FIRMWARE_FILES=$(find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.trx" 2>/dev/null | head -10)
-        if [ -n "$FIRMWARE_FILES" ]; then
-          echo "✅ 找到固件文件:"
-          echo "$FIRMWARE_FILES"
-          echo "固件大小:"
-          ls -lh $(find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.trx" 2>/dev/null | head -1) 2>/dev/null || echo "无法获取文件大小"
-        else
-          echo "❌ 未找到标准固件文件"
-          echo "bin/targets 中的可用文件:"
-          find bin/targets -type f 2>/dev/null | head -20
-        fi
+        find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.trx" 2>/dev/null | head -10 | while read file; do
+          echo "找到固件: $file"
+          ls -lh "$file"
+        done
         
-        # 创建产物目录
         mkdir -p ../artifacts
         cp -r bin/targets/* ../artifacts/ 2>/dev/null || true
 
-        # 创建构建信息文件
-        echo "源码: ${{ env.SOURCE_URL }}" > ../artifacts/build-info.txt
+        echo "编译信息:" > ../artifacts/build-info.txt
+        echo "源码: ${{ env.SOURCE_URL }}" >> ../artifacts/build-info.txt
         echo "分支: ${{ env.SOURCE_BRANCH }}" >> ../artifacts/build-info.txt
         echo "配置: ${{ github.event.inputs.config_profile }}" >> ../artifacts/build-info.txt
+        echo "优化: ${{ github.event.inputs.build_optimization }}" >> ../artifacts/build-info.txt
         echo "时间: $(date)" >> ../artifacts/build-info.txt
-        echo "编译时长: ${{ env.BUILD_DURATION }} 秒" >> ../artifacts/build-info.txt
+        echo "时长: ${{ env.BUILD_DURATION }} 秒" >> ../artifacts/build-info.txt
 
     - name: Upload artifacts
+      if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: Firmware-${{ github.run_number }}-${{ github.run_attempt }}
+        name: Firmware-${{ github.run_number }}
         path: artifacts
         retention-days: 30
+
+    - name: Save partial build on failure
+      if: failure()
+      run: |
+        cd source
+        echo "编译失败，保存部分构建结果..."
+        mkdir -p ../partial-build
+        # 保存配置和日志
+        cp .config ../partial-build/ 2>/dev/null || true
+        find . -name "*.log" -type f | head -20 | xargs -I {} cp {} ../partial-build/ 2>/dev/null || true
+        echo "部分构建结果已保存"
+
+    - name: Upload partial build
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: Partial-Build-${{ github.run_number }}
+        path: partial-build
+        retention-days: 7
 
     - name: Build report
       if: always()
@@ -198,13 +189,18 @@ jobs:
         echo "=== 构建报告 ==="
         echo "状态: ${{ job.status }}"
         echo "源码: ${{ env.SOURCE_URL }}"
+        echo "分支: ${{ env.SOURCE_BRANCH }}"
         echo "配置: ${{ github.event.inputs.config_profile }}"
+        echo "优化: ${{ github.event.inputs.build_optimization }}"
         echo "运行ID: ${{ github.run_id }}"
-        echo "尝试: ${{ github.run_attempt }}"
+        
         if [ "${{ job.status }}" = "success" ]; then
           echo "✅ 构建成功!"
-          echo "编译时长: ${{ env.BUILD_DURATION }} 秒"
+          echo "时长: ${{ env.BUILD_DURATION }} 秒"
         else
           echo "❌ 构建失败"
-          echo "💡 建议: 检查编译日志中的详细错误信息"
+          echo "💡 建议:"
+          echo "   - 尝试 'stability' 优化模式"
+          echo "   - 检查配置文件是否过于复杂"
+          echo "   - 查看部分构建结果了解进度"
         fi
