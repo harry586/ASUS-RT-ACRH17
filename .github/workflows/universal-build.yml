@@ -113,25 +113,33 @@ jobs:
         cp "$CONFIG_FILE" .config
         echo "Config applied"
 
-    - name: Fix DNSMasq conflict
+    - name: Fix package conflicts
       run: |
         cd source
-        echo "修复 DNSMasq 冲突..."
+        echo "修复软件包冲突..."
         
-        # 检查当前配置
-        echo "当前 DNSMasq 配置:"
-        grep -i "dnsmasq" .config || echo "未找到 DNSMasq 配置"
+        # 备份原配置
+        cp .config .config.backup
         
-        # 修复冲突：禁用 dnsmasq，启用 dnsmasq-full
-        # 或者根据实际情况选择其中一个
-        sed -i 's/CONFIG_PACKAGE_dnsmasq=y/CONFIG_PACKAGE_dnsmasq=n/' .config 2>/dev/null || true
-        sed -i 's/CONFIG_PACKAGE_dnsmasq-full is not set/CONFIG_PACKAGE_dnsmasq-full=y/' .config 2>/dev/null || true
-        
-        # 如果上面方法不行，使用更直接的方法
+        # 彻底解决 DNSMasq 冲突
+        echo "处理 DNSMasq 冲突..."
+        sed -i '/CONFIG_PACKAGE_dnsmasq/d' .config
+        sed -i '/CONFIG_PACKAGE_dnsmasq-full/d' .config
         echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
         echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
         
-        echo "DNSMasq 冲突已修复"
+        # 检查其他常见冲突
+        echo "检查其他可能冲突..."
+        
+        # 确保只有一个防火墙
+        sed -i '/CONFIG_PACKAGE_firewall/d' .config
+        echo "CONFIG_PACKAGE_firewall=y" >> .config
+        
+        # 确保只有一个 opkg
+        sed -i '/CONFIG_PACKAGE_opkg/d' .config
+        echo "CONFIG_PACKAGE_opkg=y" >> .config
+        
+        echo "软件包冲突修复完成"
 
     - name: Execute custom scripts
       if: github.event.inputs.enable_custom_features == 'true'
@@ -169,10 +177,18 @@ jobs:
         free -h
         echo "CPU信息:"
         nproc
-        echo "检查 DNSMasq 配置:"
-        grep -i "dnsmasq" .config || echo "未找到 DNSMasq 配置"
+        echo "检查关键软件包配置:"
+        grep -E "(dnsmasq|firewall|opkg)" .config || echo "未找到相关配置"
 
-    - name: Compile firmware (stage by stage)
+    - name: Clean and reconfigure
+      run: |
+        cd source
+        echo "清理并重新配置..."
+        make defconfig
+        # 清理可能的旧编译结果
+        make clean 2>/dev/null || true
+
+    - name: Compile firmware (optimized)
       timeout-minutes: 180
       run: |
         cd source
@@ -180,34 +196,11 @@ jobs:
         # 记录开始时间
         START_TIME=$(date +%s)
         
-        # 阶段1: 准备
-        echo "=== 阶段1: 准备环境 ==="
-        make defconfig
-        make tools/install -j$(nproc) || make tools/install -j1 V=s
+        echo "=== 开始编译 ==="
+        echo "使用详细输出模式编译..."
         
-        # 阶段2: 下载
-        echo "=== 阶段2: 下载源码 ==="
-        make download -j$(nproc) || make download -j1 V=s
-        
-        # 阶段3: 编译工具链
-        echo "=== 阶段3: 编译工具链 ==="
-        make toolchain/install -j$(nproc) || make toolchain/install -j1 V=s
-        
-        # 阶段4: 编译内核
-        echo "=== 阶段4: 编译内核 ==="
-        make target/compile -j$(nproc) || make target/compile -j1 V=s
-        
-        # 阶段5: 编译软件包
-        echo "=== 阶段5: 编译软件包 ==="
-        make package/compile -j$(nproc) || make package/compile -j1 V=s
-        
-        # 阶段6: 安装软件包
-        echo "=== 阶段6: 安装软件包 ==="
-        make package/install -j$(nproc) || make package/install -j1 V=s
-        
-        # 阶段7: 最终构建
-        echo "=== 阶段7: 最终构建 ==="
-        make target/install -j$(nproc) || make target/install -j1 V=s
+        # 使用单线程详细编译，便于调试
+        make V=s -j1
         
         # 记录构建时间
         END_TIME=$(date +%s)
