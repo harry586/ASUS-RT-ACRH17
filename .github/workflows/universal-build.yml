@@ -1,4 +1,4 @@
-name: "Universal Firmware Builder - Enhanced"
+name: "Universal Firmware Builder - Fixed Toolchain"
 
 on:
   workflow_dispatch:
@@ -163,7 +163,7 @@ jobs:
         sudo apt-get install -y flex bison byacc
         
         # 其他可能需要的依赖
-        sudo apt-get install -y subversion mercurial curl cmake ninja-build
+        sudo apt-get install -y subversion mercurial curl cmake ninja-build libelf-dev libssl-dev
         
         # 检查关键工具版本
         echo "=== 关键工具版本检查 ==="
@@ -335,8 +335,8 @@ jobs:
         
         echo "✅ 性能优化配置完成"
 
-    - name: "🛠️ 增强工具链设置"
-      timeout-minutes: 60
+    - name: "🛠️ 修复工具链编译"
+      timeout-minutes: 90
       id: toolchain-setup
       run: |
         cd ${{ env.SOURCE_DIR }}
@@ -346,19 +346,30 @@ jobs:
         STRATEGY="${{ github.event.inputs.toolchain_strategy }}"
         echo "工具链策略: $STRATEGY"
         
-        # 首先编译 host 工具
+        # 首先编译 host 工具 - 使用详细输出以便调试
         echo "🔧 编译 host 工具..."
-        if ! make tools/compile -j$(($(nproc) - 1)); then
+        if ! make tools/compile -j$(($(nproc) - 1)) V=s; then
           echo "❌ Host工具编译失败，尝试单线程编译..."
           make tools/compile -j1 V=s || exit 1
         fi
         
         echo "✅ Host工具编译完成"
         
+        # 检查 host 工具是否完整
+        echo "🔍 检查 host 工具..."
+        if [ ! -f "staging_dir/host/bin/m4" ]; then
+          echo "❌ 错误: host m4 工具未找到"
+          exit 1
+        fi
+        if [ ! -f "staging_dir/host/bin/flex" ]; then
+          echo "❌ 错误: host flex 工具未找到"
+          exit 1
+        fi
+        
         case $STRATEGY in
           "prebuilt")
             echo "🔧 使用预编译工具链..."
-            if make toolchain/install -j$(nproc); then
+            if make toolchain/install -j$(nproc) V=s; then
               echo "✅ 预编译工具链安装成功"
               echo "result=prebuilt" >> $GITHUB_OUTPUT
             else
@@ -374,19 +385,12 @@ jobs:
         
         # 如果是本地编译或回退到本地编译，编译工具链
         if [ "${{ steps.toolchain-setup.outputs.result }}" = "local" ]; then
-          echo "🔧 编译本地工具链..."
-          if ! make toolchain/compile -j$(($(nproc) - 1)); then
+          echo "🔧 编译本地工具链 (详细输出)..."
+          if ! make toolchain/compile -j$(($(nproc) - 1)) V=s; then
             echo "❌ 工具链编译失败，尝试单线程编译..."
             make toolchain/compile -j1 V=s || exit 1
           fi
           echo "✅ 本地工具链编译完成"
-        fi
-        
-        # 验证工具链
-        echo "🔍 验证工具链..."
-        if ! find staging_dir/ -name "*gcc" -type f >/dev/null 2>&1; then
-          echo "❌ 错误: 未找到编译器，工具链设置失败"
-          exit 1
         fi
         
         END_TIME=$(date +%s)
@@ -399,33 +403,74 @@ jobs:
           echo "⏱️ 工具链编译耗时: ${DURATION}秒"
         fi
 
-    - name: "🔍 工具链验证"
+    - name: "🔍 完整工具链验证"
       run: |
         cd ${{ env.SOURCE_DIR }}
-        echo "验证工具链..."
+        echo "=== 完整工具链验证 ==="
         
         # 检查 staging_dir 结构
         echo "=== staging_dir 结构 ==="
-        ls -la staging_dir/ || echo "staging_dir 不存在"
-        ls -la staging_dir/host/ || echo "staging_dir/host 不存在"
-        ls -la staging_dir/toolchain-*/ || echo "toolchain 目录不存在"
+        find staging_dir/ -type d -maxdepth 2 | sort
         
         # 检查关键工具
-        echo "=== 关键工具检查 ==="
-        GCC_FILES=$(find staging_dir/ -name "*gcc" -type f 2>/dev/null | head -5)
-        M4_FILES=$(find staging_dir/ -name "m4" -type f 2>/dev/null | head -5)
-        FLEX_FILES=$(find staging_dir/ -name "flex" -type f 2>/dev/null | head -5)
+        echo ""
+        echo "=== Host 工具检查 ==="
+        HOST_M4=$(find staging_dir/host/bin -name "m4" -type f 2>/dev/null)
+        HOST_FLEX=$(find staging_dir/host/bin -name "flex" -type f 2>/dev/null)
+        HOST_BISON=$(find staging_dir/host/bin -name "bison" -type f 2>/dev/null)
         
-        echo "GCC 文件: $GCC_FILES"
-        echo "M4 文件: $M4_FILES" 
-        echo "FLEX 文件: $FLEX_FILES"
+        echo "Host M4: $HOST_M4"
+        echo "Host FLEX: $HOST_FLEX" 
+        echo "Host BISON: $HOST_BISON"
         
-        if [ -z "$GCC_FILES" ]; then
-          echo "❌ 错误: 未找到编译器，工具链不完整"
+        if [ -z "$HOST_M4" ]; then
+          echo "❌ 错误: host m4 工具未找到"
+          exit 1
+        fi
+        if [ -z "$HOST_FLEX" ]; then
+          echo "❌ 错误: host flex 工具未找到"
           exit 1
         fi
         
-        echo "✅ 工具链验证完成"
+        echo ""
+        echo "=== 目标工具链检查 ==="
+        # 查找目标工具链目录
+        TOOLCHAIN_DIRS=$(find staging_dir/ -name "toolchain-*" -type d | grep -v host)
+        echo "找到工具链目录: $TOOLCHAIN_DIRS"
+        
+        # 在目标工具链中查找交叉编译器
+        TARGET_GCC=$(find staging_dir/toolchain-*/bin/ -name "*gcc" -type f 2>/dev/null | head -1)
+        TARGET_STRIP=$(find staging_dir/toolchain-*/bin/ -name "*strip" -type f 2>/dev/null | head -1)
+        
+        echo "目标 GCC: $TARGET_GCC"
+        echo "目标 STRIP: $TARGET_STRIP"
+        
+        if [ -z "$TARGET_GCC" ]; then
+          echo "❌ 严重错误: 未找到目标架构交叉编译器!"
+          echo "=== 详细目录结构 ==="
+          find staging_dir/toolchain-*/ -type f -name "*gcc" 2>/dev/null || echo "无 GCC 编译器"
+          echo "=== 工具链 bin 目录内容 ==="
+          for dir in $TOOLCHAIN_DIRS; do
+            if [ -d "$dir/bin" ]; then
+              echo "目录 $dir/bin:"
+              ls -la "$dir/bin/" | head -20
+            fi
+          done
+          exit 1
+        fi
+        
+        # 检查编译器是否可执行
+        if [ -x "$TARGET_GCC" ]; then
+          echo "✅ 交叉编译器可执行"
+          echo "编译器版本:"
+          $TARGET_GCC --version | head -1 || echo "无法获取版本信息"
+        else
+          echo "⚠️ 交叉编译器不可执行，尝试修复权限..."
+          chmod +x "$TARGET_GCC" || echo "权限修复失败"
+        fi
+        
+        echo ""
+        echo "✅ 工具链验证完成 - 工具链完整"
 
     - name: "📦 处理预编译IPK包"
       if: github.event.inputs.enable_custom_features == 'true'
@@ -489,7 +534,7 @@ jobs:
           echo "✅ 磁盘空间充足，可以开始编译"
         fi
 
-    - name: "🏗️ 智能编译固件 - 严格错误处理"
+    - name: "🏗️ 智能编译固件"
       timeout-minutes: 240
       id: compile-firmware
       run: |
@@ -677,6 +722,7 @@ jobs:
       if: always()
       run: |
         echo "=== 编译诊断报告 ==="
+        echo "构建状态: ${{ env.BUILD_STATUS || 'unknown' }}"
         
         BUILD_LOGS_DIR="/home/runner/build-logs"
         
@@ -697,19 +743,6 @@ jobs:
           done
         else
           echo "⚠️ 无编译日志文件"
-        fi
-        
-        # 显示耗时统计
-        echo ""
-        echo "⏱️ 关键步骤耗时统计:"
-        if [ -n "${{ env.feeds_duration }}" ] && [ "${{ env.feeds_duration }}" -gt 600 ]; then
-          echo "  Feeds更新: ${{ env.feeds_duration }}秒 (较长)"
-        fi
-        if [ -n "${{ env.toolchain_duration }}" ] && [ "${{ env.toolchain_duration }}" -gt 1200 ]; then
-          echo "  工具链编译: ${{ env.toolchain_duration }}秒 (较长)"
-        fi
-        if [ -n "${{ env.BUILD_DURATION }}" ] && [ "${{ env.BUILD_DURATION }}" -gt 3600 ]; then
-          echo "  总编译: ${{ env.BUILD_DURATION }}秒 ($((${{ env.BUILD_DURATION }}/60))分钟) (较长)"
         fi
 
     - name: "📦 收集构建产物和诊断信息"
@@ -733,10 +766,14 @@ jobs:
         cp .config ${{ env.ARTIFACTS_DIR }}/config 2>/dev/null || true
         
         # 收集工具链信息用于调试
-        echo "=== 工具链信息 ===" > ${{ env.ARTIFACTS_DIR }}/toolchain-info.txt
-        find staging_dir/ -name "*gcc" -type f 2>/dev/null >> ${{ env.ARTIFACTS_DIR }}/toolchain-info.txt || true
-        find staging_dir/ -name "m4" -type f 2>/dev/null >> ${{ env.ARTIFACTS_DIR }}/toolchain-info.txt || true
-        find staging_dir/ -name "flex" -type f 2>/dev/null >> ${{ env.ARTIFACTS_DIR }}/toolchain-info.txt || true
+        {
+          echo "=== 工具链信息 ==="
+          echo "Host 工具:"
+          find staging_dir/host/bin -type f 2>/dev/null | sort
+          echo ""
+          echo "目标工具链:"
+          find staging_dir/toolchain-*/bin -type f 2>/dev/null | sort
+        } > ${{ env.ARTIFACTS_DIR }}/toolchain-info.txt 2>/dev/null || true
         
         # 收集关键构建状态
         {
@@ -749,39 +786,6 @@ jobs:
           echo "优化策略: ${{ github.event.inputs.build_optimization }}"
           echo "工具链: ${{ steps.toolchain-setup.outputs.result }}"
           echo "自定义功能: ${{ github.event.inputs.enable_custom_features }}"
-          echo ""
-          echo "=== 耗时统计 ==="
-          if [ -n "${{ env.feeds_duration }}" ]; then
-            echo "Feeds更新: ${{ env.feeds_duration }}秒"
-          fi
-          if [ -n "${{ env.toolchain_duration }}" ]; then
-            echo "工具链编译: ${{ env.toolchain_duration }}秒"
-          fi
-          if [ -n "${{ env.BUILD_DURATION }}" ]; then
-            echo "总编译: ${{ env.BUILD_DURATION }}秒"
-          fi
-          if [ -n "${{ env.PHASE1_DURATION }}" ]; then
-            echo "阶段1(内核): ${{ env.PHASE1_DURATION }}秒"
-          fi
-          if [ -n "${{ env.PHASE2_DURATION }}" ]; then
-            echo "阶段2(网络): ${{ env.PHASE2_DURATION }}秒"
-          fi
-          if [ -n "${{ env.PHASE3_DURATION }}" ]; then
-            echo "阶段3(最终): ${{ env.PHASE3_DURATION }}秒"
-          fi
-          echo ""
-          if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
-            echo "=== 文件列表 ==="
-            find bin/targets -type f 2>/dev/null | sort || echo "无法列出文件"
-          else
-            echo "=== 错误摘要 ==="
-            for logfile in $BUILD_LOGS_DIR/*.log; do
-              if [ -f "$logfile" ]; then
-                echo "错误来自 $(basename $logfile):"
-                tail -50 "$logfile" | grep -i "error\|failed" | tail -10 || echo "  无明确错误信息"
-              fi
-            done
-          fi
         } > ${{ env.ARTIFACTS_DIR }}/build-report.txt
         
         # 复制到工作目录
@@ -804,44 +808,21 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: "Firmware-${{ github.run_number }}-${{ env.ACTUAL_BRANCH }}-${{ github.event.inputs.build_optimization }}-${{ env.BUILD_STATUS || 'unknown' }}"
+        name: "Firmware-${{ github.run_number }}-${{ env.ACTUAL_BRANCH }}-${{ env.BUILD_STATUS || 'unknown' }}"
         path: artifacts
         retention-days: 30
 
-    - name: "📊 智能编译报告"
+    - name: "📊 最终编译报告"
       if: always()
       run: |
-        echo "=== 智能编译报告 ==="
+        echo "=== 最终编译报告 ==="
         echo "状态: ${{ job.status }}"
         echo "编译状态: ${{ env.BUILD_STATUS || 'unknown' }}"
-        echo "源码: ${{ env.SOURCE_URL }}"
-        echo "分支: ${{ env.ACTUAL_BRANCH }}"
         
         if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
           echo "🎉 构建成功!"
           echo "⏱️ 编译时长: ${{ env.BUILD_DURATION }}秒"
-          echo "⚡ 性能特性:"
-          echo "  - 使用 /mnt 分区 (66G 空间)"
-          echo "  - 8GB 交换文件"
-          echo "  - CCache 编译缓存 (8GB)"
-          echo "  - 智能多线程编译"
-          echo "  - 增强工具链支持"
         else
           echo "❌ 构建失败"
-          echo "🔍 诊断信息已收集到Artifacts中"
-          echo "💡 查看 build-logs/ 目录获取详细错误信息"
-          echo "🛠️ 工具链和依赖问题已增强处理"
-        fi
-        
-        # 显示耗时警告
-        echo ""
-        echo "⏱️ 耗时分析:"
-        if [ -n "${{ env.feeds_duration }}" ] && [ "${{ env.feeds_duration }}" -gt 600 ]; then
-          echo "  ⚠️ Feeds更新耗时较长: ${{ env.feeds_duration }}秒"
-        fi
-        if [ -n "${{ env.toolchain_duration }}" ] && [ "${{ env.toolchain_duration }}" -gt 1200 ]; then
-          echo "  ⚠️ 工具链编译耗时较长: ${{ env.toolchain_duration }}秒"
-        fi
-        if [ -n "${{ env.BUILD_DURATION }}" ] && [ "${{ env.BUILD_DURATION }}" -gt 3600 ]; then
-          echo "  ⚠️ 总编译耗时较长: ${{ env.BUILD_DURATION }}秒"
+          echo "🔍 请查看 Artifacts 中的详细日志和诊断信息"
         fi
