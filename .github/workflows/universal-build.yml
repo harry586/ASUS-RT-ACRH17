@@ -382,6 +382,13 @@ jobs:
           echo "✅ 本地工具链编译完成"
         fi
         
+        # 验证工具链
+        echo "🔍 验证工具链..."
+        if ! find staging_dir/ -name "*gcc" -type f >/dev/null 2>&1; then
+          echo "❌ 错误: 未找到编译器，工具链设置失败"
+          exit 1
+        fi
+        
         END_TIME=$(date +%s)
         DURATION=$((END_TIME - START_TIME))
         
@@ -405,9 +412,18 @@ jobs:
         
         # 检查关键工具
         echo "=== 关键工具检查 ==="
-        find staging_dir/ -name "m4" -type f 2>/dev/null | head -5
-        find staging_dir/ -name "flex" -type f 2>/dev/null | head -5
-        find staging_dir/ -name "*gcc" -type f 2>/dev/null | head -5
+        GCC_FILES=$(find staging_dir/ -name "*gcc" -type f 2>/dev/null | head -5)
+        M4_FILES=$(find staging_dir/ -name "m4" -type f 2>/dev/null | head -5)
+        FLEX_FILES=$(find staging_dir/ -name "flex" -type f 2>/dev/null | head -5)
+        
+        echo "GCC 文件: $GCC_FILES"
+        echo "M4 文件: $M4_FILES" 
+        echo "FLEX 文件: $FLEX_FILES"
+        
+        if [ -z "$GCC_FILES" ]; then
+          echo "❌ 错误: 未找到编译器，工具链不完整"
+          exit 1
+        fi
         
         echo "✅ 工具链验证完成"
 
@@ -473,7 +489,7 @@ jobs:
           echo "✅ 磁盘空间充足，可以开始编译"
         fi
 
-    - name: "🏗️ 智能编译固件 - 修复版本"
+    - name: "🏗️ 智能编译固件 - 严格错误处理"
       timeout-minutes: 240
       id: compile-firmware
       run: |
@@ -505,73 +521,62 @@ jobs:
         echo "  - CPU核心: $CPU_CORES"
         
         # 设置编译结果变量
-        COMPILE_SUCCESS=true
+        COMPILE_SUCCESS=false
+        BUILD_EXIT_CODE=1
         
-        # 智能编译策略
+        # 智能编译策略 - 使用严格错误处理
         case "${{ github.event.inputs.build_optimization }}" in
           "speed")
             echo "🚀 极速模式: 使用 $CPU_CORES 线程单阶段编译"
             {
               echo "📦 单阶段快速编译"
-              if make -j$CPU_CORES CC="ccache gcc" CXX="ccache g++" 2>&1; then
+              if make -j$CPU_CORES CC="ccache gcc" CXX="ccache g++"; then
                 echo "✅ 编译命令执行完成"
+                COMPILE_SUCCESS=true
+                BUILD_EXIT_CODE=0
               else
                 echo "❌ 编译命令执行失败"
                 COMPILE_SUCCESS=false
+                BUILD_EXIT_CODE=$?
               fi
             } | tee $BUILD_LOGS_DIR/speed.log
             ;;
           "stability")
             echo "🛡️ 稳定模式: 使用 $((CPU_CORES - 1)) 线程分阶段编译"
             {
+              set -e  # 严格错误处理，任何命令失败立即退出
+              
               echo "🔧 阶段1: 编译内核和基础包 (详细输出)"
-              if ! make target/linux/compile package/kernel/linux/compile -j$((CPU_CORES - 1)) V=s CC="ccache gcc" CXX="ccache g++" 2>&1; then
-                echo "❌ 阶段1编译失败"
-                COMPILE_SUCCESS=false
-                exit 1
-              fi
+              make target/linux/compile package/kernel/linux/compile -j$((CPU_CORES - 1)) V=s CC="ccache gcc" CXX="ccache g++"
               
               # 阶段1后空间检查
               echo "=== 阶段1后磁盘空间 ==="
               df -h /mnt
               
               echo "📦 阶段2: 编译网络和系统包"
-              if ! make package/network/compile package/system/compile -j$((CPU_CORES - 1)) CC="ccache gcc" CXX="ccache g++" 2>&1; then
-                echo "❌ 阶段2编译失败"
-                COMPILE_SUCCESS=false
-                exit 1
-              fi
+              make package/network/compile package/system/compile -j$((CPU_CORES - 1)) CC="ccache gcc" CXX="ccache g++"
               
               # 阶段2后空间检查
               echo "=== 阶段2后磁盘空间 ==="
               df -h /mnt
               
               echo "🔧 阶段3: 最终组装"
-              if ! make target/install -j$((CPU_CORES - 1)) CC="ccache gcc" CXX="ccache g++" 2>&1; then
-                echo "❌ 阶段3编译失败"
-                COMPILE_SUCCESS=false
-                exit 1
-              fi
-            } | tee $BUILD_LOGS_DIR/stability.log
+              make target/install -j$((CPU_CORES - 1)) CC="ccache gcc" CXX="ccache g++"
+              
+              COMPILE_SUCCESS=true
+              BUILD_EXIT_CODE=0
+              
+            } 2>&1 | tee $BUILD_LOGS_DIR/stability.log
             ;;
           "balanced"|*)
             echo "⚖️ 平衡模式: 使用 $CPU_CORES 线程智能分阶段编译"
             {
+              set -e  # 严格错误处理，任何命令失败立即退出
+              
               # 阶段1: 内核和关键驱动 - 详细输出便于诊断
               echo "🔧 阶段1: 编译内核和关键驱动 (详细输出)"
               PHASE1_START=$(date +%s)
-              if ! make target/linux/compile package/kernel/linux/compile -j$CPU_CORES V=s CC="ccache gcc" CXX="ccache g++" 2>&1; then
-                echo "❌ 阶段1编译失败"
-                echo "💡 尝试修复: 检查工具链问题..."
-                
-                # 检查工具链状态
-                echo "=== 工具链状态检查 ==="
-                find staging_dir/ -name "*gcc" -type f 2>/dev/null | head -10
-                find staging_dir/ -name "m4" -type f 2>/dev/null | head -5
-                
-                COMPILE_SUCCESS=false
-                exit 1
-              fi
+              make target/linux/compile package/kernel/linux/compile -j$CPU_CORES V=s CC="ccache gcc" CXX="ccache g++"
               PHASE1_END=$(date +%s)
               PHASE1_DURATION=$((PHASE1_END - PHASE1_START))
               echo "阶段1完成，耗时: ${PHASE1_DURATION}秒"
@@ -583,11 +588,7 @@ jobs:
               # 阶段2: 网络和系统包 - 快速编译
               echo "📦 阶段2: 编译网络和系统包 (快速模式)"
               PHASE2_START=$(date +%s)
-              if ! make package/network/compile package/system/compile -j$CPU_CORES CC="ccache gcc" CXX="ccache g++" 2>&1; then
-                echo "❌ 阶段2编译失败"
-                COMPILE_SUCCESS=false
-                exit 1
-              fi
+              make package/network/compile package/system/compile -j$CPU_CORES CC="ccache gcc" CXX="ccache g++"
               PHASE2_END=$(date +%s)
               PHASE2_DURATION=$((PHASE2_END - PHASE2_START))
               echo "阶段2完成，耗时: ${PHASE2_DURATION}秒"
@@ -599,31 +600,48 @@ jobs:
               # 阶段3: 剩余包和最终组装
               echo "🔧 阶段3: 编译剩余包并最终组装"
               PHASE3_START=$(date +%s)
-              if ! make package/compile target/install -j$CPU_CORES CC="ccache gcc" CXX="ccache g++" 2>&1; then
-                echo "❌ 阶段3编译失败"
-                COMPILE_SUCCESS=false
-                exit 1
-              fi
+              make package/compile target/install -j$CPU_CORES CC="ccache gcc" CXX="ccache g++"
               PHASE3_END=$(date +%s)
               PHASE3_DURATION=$((PHASE3_END - PHASE3_START))
               echo "阶段3完成，耗时: ${PHASE3_DURATION}秒"
               
-            } | tee $BUILD_LOGS_DIR/balanced.log
+              COMPILE_SUCCESS=true
+              BUILD_EXIT_CODE=0
+              
+            } 2>&1 | tee $BUILD_LOGS_DIR/balanced.log
             
             # 记录阶段时长
-            echo "PHASE1_DURATION=$PHASE1_DURATION" >> $GITHUB_ENV
-            echo "PHASE2_DURATION=$PHASE2_DURATION" >> $GITHUB_ENV
-            echo "PHASE3_DURATION=$PHASE3_DURATION" >> $GITHUB_ENV
+            if [ "$COMPILE_SUCCESS" = "true" ]; then
+              echo "PHASE1_DURATION=$PHASE1_DURATION" >> $GITHUB_ENV
+              echo "PHASE2_DURATION=$PHASE2_DURATION" >> $GITHUB_ENV
+              echo "PHASE3_DURATION=$PHASE3_DURATION" >> $GITHUB_ENV
+            fi
             ;;
         esac
         
-        # 正确检查编译结果
-        if [ "$COMPILE_SUCCESS" = "true" ] && [ $? -eq 0 ]; then
+        # 显示ccache统计
+        echo "📊 CCache 统计:"
+        ccache -s
+        
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+        echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
+        
+        if [ "$COMPILE_SUCCESS" = "true" ] && [ $BUILD_EXIT_CODE -eq 0 ]; then
+          echo "BUILD_STATUS=success" >> $GITHUB_ENV
           echo "🎉 编译成功完成!"
-          FINAL_STATUS="success"
+          
+          # 记录编译总时长
+          if [ "$DURATION" -gt 3600 ]; then
+            echo "⏱️ 总编译耗时: ${DURATION}秒 ($(($DURATION/60))分钟) - 较长"
+          else
+            echo "⏱️ 编译耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
+          fi
+          
+          exit 0
         else
+          echo "BUILD_STATUS=failure" >> $GITHUB_ENV
           echo "❌ 编译失败"
-          FINAL_STATUS="failure"
           
           # 详细的错误分析
           echo "=== 详细错误分析 ==="
@@ -635,32 +653,14 @@ jobs:
               echo "----------------------------------------"
             fi
           done
-        fi
-        
-        # 显示ccache统计
-        echo "📊 CCache 统计:"
-        ccache -s
-        
-        END_TIME=$(date +%s)
-        DURATION=$((END_TIME - START_TIME))
-        echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
-        echo "BUILD_STATUS=$FINAL_STATUS" >> $GITHUB_ENV
-        
-        # 记录编译总时长
-        if [ "$DURATION" -gt 3600 ]; then
-          echo "⏱️ 总编译耗时: ${DURATION}秒 ($(($DURATION/60))分钟) - 较长"
-        else
-          echo "⏱️ 编译耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
-        fi
-        
-        # 根据最终状态退出
-        if [ "$FINAL_STATUS" = "success" ]; then
-          exit 0
-        else
+          
+          # 记录编译总时长
+          echo "⏱️ 编译失败于: ${DURATION}秒"
           exit 1
         fi
 
     - name: "💾 编译后最终空间检查"
+      if: env.BUILD_STATUS == 'success'
       run: |
         echo "=== 编译后最终空间检查 ==="
         echo "根分区 (/):"
@@ -713,15 +713,17 @@ jobs:
         fi
 
     - name: "📦 收集构建产物和诊断信息"
-      if: success() || failure()
+      if: always()
       run: |
         cd ${{ env.SOURCE_DIR }}
         echo "收集编译产物和诊断信息..."
         
         mkdir -p ${{ env.ARTIFACTS_DIR }}
         
-        # 收集固件文件
-        find bin/targets -type f \( -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" \) -exec cp --parents {} ${{ env.ARTIFACTS_DIR }}/ \; 2>/dev/null || true
+        # 收集固件文件（仅在成功时）
+        if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
+          find bin/targets -type f \( -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" \) -exec cp --parents {} ${{ env.ARTIFACTS_DIR }}/ \; 2>/dev/null || true
+        fi
         
         # 收集编译日志
         BUILD_LOGS_DIR="/home/runner/build-logs"
@@ -768,8 +770,18 @@ jobs:
             echo "阶段3(最终): ${{ env.PHASE3_DURATION }}秒"
           fi
           echo ""
-          echo "=== 文件列表 ==="
-          find bin/targets -type f 2>/dev/null | sort || echo "无法列出文件"
+          if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
+            echo "=== 文件列表 ==="
+            find bin/targets -type f 2>/dev/null | sort || echo "无法列出文件"
+          else
+            echo "=== 错误摘要 ==="
+            for logfile in $BUILD_LOGS_DIR/*.log; do
+              if [ -f "$logfile" ]; then
+                echo "错误来自 $(basename $logfile):"
+                tail -50 "$logfile" | grep -i "error\|failed" | tail -10 || echo "  无明确错误信息"
+              fi
+            done
+          fi
         } > ${{ env.ARTIFACTS_DIR }}/build-report.txt
         
         # 复制到工作目录
@@ -789,10 +801,10 @@ jobs:
         echo "✅ 环境清理完成"
 
     - name: "💾 上传构建产物"
-      if: success() || failure()
+      if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: "Firmware-${{ github.run_number }}-${{ env.ACTUAL_BRANCH }}-${{ github.event.inputs.build_optimization }}"
+        name: "Firmware-${{ github.run_number }}-${{ env.ACTUAL_BRANCH }}-${{ github.event.inputs.build_optimization }}-${{ env.BUILD_STATUS || 'unknown' }}"
         path: artifacts
         retention-days: 30
 
