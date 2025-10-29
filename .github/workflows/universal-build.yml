@@ -59,29 +59,33 @@ jobs:
     - name: "📥 检出仓库"
       uses: actions/checkout@v4
 
-    - name: "💾 检查磁盘空间 (构建前)"
+    - name: "💾 紧急磁盘空间清理"
       run: |
-        echo "=== 构建前磁盘空间检查 ==="
+        echo "=== 紧急磁盘空间清理 ==="
         df -h
-        echo "=== 最大目录占用 ==="
-        sudo du -sh /home/runner/* 2>/dev/null | sort -hr | head -10
-        sudo du -sh /home/runner/actions-runner/cached/* 2>/dev/null | sort -hr | head -10 || true
-        echo "=== 可用内存 ==="
-        free -h
-
-    - name: "🧹 清理系统缓存"
-      run: |
-        echo "清理系统缓存以释放空间..."
+        
+        echo "1. 清理系统缓存..."
         sudo apt-get clean
         sudo rm -rf /var/lib/apt/lists/*
-        sudo rm -rf /usr/local/lib/android/sdk/ndk-bundle 2>/dev/null || true
-        sudo rm -rf /usr/share/dotnet/sdk/NuGetFallbackFolder 2>/dev/null || true
+        sudo rm -rf /var/cache/apt/*
         
-        # 清理旧的日志文件
-        echo "清理旧的日志文件..."
-        sudo find /home/runner/actions-runner/cached/_diag/ -name "*.log" -mtime +1 -delete 2>/dev/null || true
+        echo "2. 清理日志文件..."
+        sudo find /home/runner/actions-runner/cached/_diag/ -name "*.log" -delete 2>/dev/null || true
+        sudo journalctl --vacuum-time=1h 2>/dev/null || true
         
-        echo "✅ 系统缓存清理完成"
+        echo "3. 清理临时文件..."
+        sudo rm -rf /tmp/* 2>/dev/null || true
+        sudo rm -rf /var/tmp/* 2>/dev/null || true
+        
+        echo "4. 清理不必要的软件包..."
+        sudo apt-get autoremove -y 2>/dev/null || true
+        sudo apt-get remove -y --purge man-db manpages 2>/dev/null || true
+        
+        echo "5. 清理Docker缓存（如果存在）..."
+        sudo docker system prune -f 2>/dev/null || true
+        
+        echo "=== 清理后磁盘空间 ==="
+        df -h
 
     - name: "🔍 检查目录结构"
       run: |
@@ -145,7 +149,11 @@ jobs:
       run: |
         echo "安装编译依赖包..."
         sudo apt-get update
-        sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip python3-setuptools rsync unzip zlib1g-dev file wget jq
+        # 只安装最必要的包
+        sudo apt-get install -y --no-install-recommends \
+          build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+          gettext git libncurses5-dev libssl-dev python3 python3-pip \
+          rsync unzip zlib1g-dev file wget jq
         
         echo "🔄 创建交换文件解决内存不足..."
         sudo fallocate -l 4G /swapfile
@@ -156,18 +164,18 @@ jobs:
         
         echo "✅ 构建环境准备完成"
 
-    - name: "📥 获取源代码 - 智能分支处理"
+    - name: "📥 获取源代码 - 极简克隆"
       id: clone-source
       run: |
         echo "正在克隆源码仓库: ${{ env.SOURCE_URL }}"
         echo "首选分支: ${{ env.SOURCE_BRANCH }}"
         
-        # 智能分支处理：尝试首选分支，如果失败则尝试备选分支
+        # 极简克隆策略
         CLONE_SUCCESS=false
         
         # 尝试首选分支
         echo "🔍 尝试使用首选分支: ${{ env.SOURCE_BRANCH }}"
-        if git clone --depth 1 --branch "${{ env.SOURCE_BRANCH }}" "${{ env.SOURCE_URL }}" source 2>/dev/null; then
+        if git clone --depth 1 --filter=blob:none --branch "${{ env.SOURCE_BRANCH }}" "${{ env.SOURCE_URL }}" source 2>/dev/null; then
           echo "✅ 使用首选分支克隆成功: ${{ env.SOURCE_BRANCH }}"
           CLONE_SUCCESS=true
           ACTUAL_BRANCH="${{ env.SOURCE_BRANCH }}"
@@ -180,65 +188,53 @@ jobs:
           elif [ "${{ env.SOURCE_BRANCH }}" = "master" ]; then
             ALTERNATIVE_BRANCH="main"
           else
-            # 对于其他分支，尝试main和master
             ALTERNATIVE_BRANCH="main"
           fi
           
           echo "🔍 尝试备选分支: $ALTERNATIVE_BRANCH"
-          if git clone --depth 1 --branch "$ALTERNATIVE_BRANCH" "${{ env.SOURCE_URL }}" source 2>/dev/null; then
+          if git clone --depth 1 --filter=blob:none --branch "$ALTERNATIVE_BRANCH" "${{ env.SOURCE_URL }}" source 2>/dev/null; then
             echo "✅ 使用备选分支克隆成功: $ALTERNATIVE_BRANCH"
             CLONE_SUCCESS=true
             ACTUAL_BRANCH="$ALTERNATIVE_BRANCH"
           else
-            # 如果还失败，尝试探测可用分支
-            echo "🔍 探测可用分支..."
-            git clone --depth 1 "${{ env.SOURCE_URL }}" source-temp 2>/dev/null
-            cd source-temp
-            AVAILABLE_BRANCHES=$(git branch -r | grep -v '\->' | sed 's/origin\///' | head -5)
-            cd ..
-            rm -rf source-temp
-            
-            echo "可用分支: $AVAILABLE_BRANCHES"
-            
-            # 尝试第一个可用分支
-            FIRST_BRANCH=$(echo "$AVAILABLE_BRANCHES" | head -1 | tr -d ' ')
-            if [ -n "$FIRST_BRANCH" ]; then
-              echo "🔍 尝试可用分支: $FIRST_BRANCH"
-              if git clone --depth 1 --branch "$FIRST_BRANCH" "${{ env.SOURCE_URL }}" source 2>/dev/null; then
-                echo "✅ 使用可用分支克隆成功: $FIRST_BRANCH"
-                CLONE_SUCCESS=true
-                ACTUAL_BRANCH="$FIRST_BRANCH"
-              fi
+            # 最后尝试：不指定分支
+            echo "🔍 尝试无分支克隆..."
+            if git clone --depth 1 --filter=blob:none "${{ env.SOURCE_URL }}" source 2>/dev/null; then
+              echo "✅ 无分支克隆成功，将使用默认分支"
+              CLONE_SUCCESS=true
+              cd source
+              ACTUAL_BRANCH=$(git branch --show-current)
+              cd ..
             fi
           fi
         fi
         
         if [ "$CLONE_SUCCESS" = "false" ]; then
-          echo "❌ 所有分支尝试都失败，请检查仓库URL和分支名称"
+          echo "❌ 所有克隆尝试都失败，请检查仓库URL和分支名称"
           exit 1
         fi
         
         echo "ACTUAL_BRANCH=$ACTUAL_BRANCH" >> $GITHUB_ENV
         echo "✅ 源码克隆完成，实际使用分支: $ACTUAL_BRANCH"
 
-    - name: "💾 检查磁盘空间 (克隆后)"
+    - name: "💾 克隆后磁盘检查"
       run: |
         echo "=== 源码克隆后磁盘空间 ==="
         df -h
         echo "=== 源码目录大小 ==="
         du -sh source/ || echo "无法获取源码目录大小"
 
-    - name: "🔧 源码初始化"
-      timeout-minutes: 30
+    - name: "🔧 源码初始化 - 精简版"
+      timeout-minutes: 20
       run: |
         cd source
-        echo "初始化源码树..."
+        echo "初始化源码树（精简模式）..."
         
-        echo "步骤1: 更新feeds..."
+        echo "步骤1: 仅更新必要的feeds..."
         ./scripts/feeds update packages
         ./scripts/feeds update luci
         
-        echo "步骤2: 安装feeds..."
+        echo "步骤2: 安装基础feeds..."
         ./scripts/feeds install -a
         
         echo "✅ Feeds更新完成"
@@ -282,7 +278,7 @@ jobs:
         case $STRATEGY in
           "prebuilt")
             echo "🔧 使用预编译工具链..."
-            if make tools/install toolchain/install -j2; then
+            if make tools/install toolchain/install -j1; then
               echo "✅ 预编译工具链安装成功"
               echo "result=prebuilt" >> $GITHUB_OUTPUT
               echo "status=success" >> $GITHUB_OUTPUT
@@ -299,7 +295,7 @@ jobs:
             ;;
           "auto"|*)
             echo "🔧 自动选择工具链策略..."
-            if make tools/install toolchain/install -j2; then
+            if make tools/install toolchain/install -j1; then
               echo "✅ 预编译工具链可用"
               echo "result=prebuilt" >> $GITHUB_OUTPUT
               echo "status=success" >> $GITHUB_OUTPUT
@@ -340,30 +336,7 @@ jobs:
           cp "$ipk" package/base-files/files/usr/lib/opkg/custom/
         done
         
-        mkdir -p package/base-files/files/etc/init.d
-        echo '#!/bin/sh /etc/rc.common' > package/base-files/files/etc/init.d/custom-ipk-install
-        echo 'START=99' >> package/base-files/files/etc/init.d/custom-ipk-install
-        echo 'start() {' >> package/base-files/files/etc/init.d/custom-ipk-install
-        echo '    echo "正在安装自定义IPK包..."' >> package/base-files/files/etc/init.d/custom-ipk-install
-        echo '    for ipk in /usr/lib/opkg/custom/*.ipk; do' >> package/base-files/files/etc/init.d/custom-ipk-install
-        echo '        if [ -f "$ipk" ]; then' >> package/base-files/files/etc/init.d/custom-ipk-install
-        echo '            echo "安装: $(basename $ipk)"' >> package/base-files/files/etc/init.d/custom-ipk-install
-        echo '            opkg install "$ipk"' >> package/base-files/files/etc/init.d/custom-ipk-install
-        echo '        fi' >> package/base-files/files/etc/init.d/custom-ipk-install
-        echo '    done' >> package/base-files/files/etc/init.d/custom-ipk-install
-        echo '    echo "自定义IPK包安装完成"' >> package/base-files/files/etc/init.d/custom-ipk-install
-        echo '}' >> package/base-files/files/etc/init.d/custom-ipk-install
-        
-        chmod +x package/base-files/files/etc/init.d/custom-ipk-install
-        
-        if [ -f "package/base-files/files/etc/rc.local" ]; then
-          if ! grep -q "custom-ipk-install" package/base-files/files/etc/rc.local; then
-            echo "/etc/init.d/custom-ipk-install start" >> package/base-files/files/etc/rc.local
-          fi
-        fi
-        
         echo "✅ 预编译IPK包处理完成"
-        echo "📊 共处理 $(echo "$IPK_FILES" | wc -l) 个IPK包"
 
     - name: "🛠️ 执行自定义脚本"
       if: github.event.inputs.enable_custom_features == 'true'
@@ -382,9 +355,6 @@ jobs:
           echo "ℹ️ 未找到任何脚本文件"
           exit 0
         fi
-        
-        echo "找到以下脚本文件:"
-        echo "$SCRIPTS"
         
         for script in $SCRIPTS; do
           echo "执行脚本: $(basename "$script")"
@@ -406,65 +376,62 @@ jobs:
         make defconfig >/dev/null 2>&1 || echo "配置验证完成（非交互式）"
         echo "✅ 配置验证完成"
 
-    - name: "💾 检查磁盘空间 (编译前)"
+    - name: "💾 编译前紧急空间检查"
       run: |
-        echo "=== 编译前磁盘空间检查 ==="
+        echo "=== 编译前磁盘空间紧急检查 ==="
         df -h
-        echo "=== 编译目录大小 ==="
-        du -sh source/ || echo "无法获取编译目录大小"
+        
+        # 如果空间仍然不足，执行额外清理
+        AVAILABLE_SPACE=$(df / | awk 'NR==2 {print $4}')
+        if [ "$AVAILABLE_SPACE" -lt 8000000 ]; then  # 如果小于8GB
+          echo "⚠️ 磁盘空间仍然紧张，执行额外清理..."
+          cd source
+          # 清理一些编译缓存
+          rm -rf tmp/ 2>/dev/null || true
+          rm -rf logs/ 2>/dev/null || true
+          cd ..
+          sudo rm -rf /var/log/*.gz 2>/dev/null || true
+          sudo rm -rf /var/log/*.old 2>/dev/null || true
+          echo "✅ 额外清理完成"
+          df -h
+        fi
 
-    - name: "🏗️ 编译固件 - 内存优化版"
-      timeout-minutes: 180
+    - name: "🏗️ 编译固件 - 超保守模式"
+      timeout-minutes: 240
       run: |
         cd source
         export TERM=linux
         export FORCE_UNSAFE_CONFIGURE=1
         
-        # 关键：设置内存优化环境变量
+        # 超保守内存设置
         export MAKE_TERMOUT=
         export MAKE_TERMERR=
-        # 减少并行任务以避免内存溢出
-        export NUM_CPU=2
+        export NUM_CPU=1  # 强制单线程
         
         START_TIME=$(date +%s)
         
-        echo "开始编译固件 (内存优化模式)..."
+        echo "开始编译固件 (超保守模式)..."
         echo "📊 编译参数:"
         echo "  - 工具链策略: ${{ steps.toolchain-setup.outputs.result }}"
         echo "  - 编译优化: ${{ github.event.inputs.build_optimization }}"
         echo "  - 自定义功能: ${{ github.event.inputs.enable_custom_features }}"
         echo "  - 实际分支: ${{ env.ACTUAL_BRANCH }}"
         
-        # 关键优化：根据内存限制调整编译策略
-        case "${{ github.event.inputs.build_optimization }}" in
-          "speed")
-            echo "🚀 速度优先模式 (限制并行任务)"
-            # 即使速度优先也限制并行数
-            JOBS=2
-            echo "使用 $JOBS 个并行任务 (内存安全)"
-            make -j$JOBS
-            ;;
-          "stability")
-            echo "🛡️ 稳定性优先模式: 单线程编译"
-            make V=s -j1
-            ;;
-          "balanced"|*)
-            echo "⚖️ 平衡模式: 2线程编译"
-            make -j2 V=s
-            ;;
-        esac
+        # 无论用户选择什么优化策略，都使用单线程
+        echo "🛡️ 超保守模式: 单线程编译 (避免磁盘空间不足)"
+        if make -j1 V=s; then
+          echo "✅ 编译成功!"
+        else
+          echo "❌ 编译失败"
+          # 尝试更保守的方式
+          echo "🔄 尝试无并行编译..."
+          make V=s
+        fi
         
         END_TIME=$(date +%s)
         DURATION=$((END_TIME - START_TIME))
         echo "✅ 编译完成! 耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
         echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
-
-    - name: "💾 检查磁盘空间 (编译后)"
-      run: |
-        echo "=== 编译后磁盘空间 ==="
-        df -h
-        echo "=== 编译输出目录大小 ==="
-        du -sh source/bin/ 2>/dev/null || echo "无法获取输出目录大小"
 
     - name: "📦 收集构建产物"
       if: success()
@@ -474,19 +441,20 @@ jobs:
         
         mkdir -p ../artifacts
         
-        FIRMWARE_FILES=$(find bin/targets -type f \( -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" \) 2>/dev/null | head -20)
+        # 优先查找固件文件
+        FIRMWARE_FILES=$(find bin/targets -type f \( -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" \) 2>/dev/null | head -10)
         
         if [ -n "$FIRMWARE_FILES" ]; then
           echo "✅ 找到固件文件:"
           echo "$FIRMWARE_FILES"
           for file in $FIRMWARE_FILES; do
-            echo "📦 复制: $file"
+            echo "📦 复制: $(basename "$file")"
             mkdir -p "../artifacts/$(dirname "$file")"
             cp "$file" "../artifacts/$file"
           done
         else
-          echo "⚠️ 未找到标准固件文件"
-          find bin/ -type f 2>/dev/null | head -30
+          echo "⚠️ 未找到标准固件文件，收集所有bin目录文件..."
+          find bin/ -type f -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" | head -20
         fi
         
         {
@@ -501,33 +469,31 @@ jobs:
           echo "构建时间: $(date)"
           echo "编译时长: ${{ env.BUILD_DURATION }}秒"
           echo "GitHub Run: ${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "编译模式: 超保守单线程 (磁盘空间优化)"
           echo ""
           echo "=== 文件列表 ==="
           find bin/targets -type f 2>/dev/null | sort || echo "无法列出文件"
         } > ../artifacts/build-info.txt
 
-    - name: "🧹 编译后清理"
+    - name: "🧹 最终清理释放空间"
       if: always()
       run: |
-        echo "=== 编译后清理 ==="
+        echo "=== 最终磁盘空间清理 ==="
         
-        # 清理源码目录中的临时文件（保留bin目录）
+        # 删除源码目录（保留artifacts）
         if [ -d "source" ]; then
-          cd source
-          echo "清理源码临时文件..."
-          # 保留bin目录，清理其他编译中间文件
-          find . -name "tmp" -type d -exec rm -rf {} + 2>/dev/null || true
-          find . -name "staging_dir" -type d -exec rm -rf {} + 2>/dev/null || true
-          find . -name "build_dir" -type d -exec rm -rf {} + 2>/dev/null || true
-          cd ..
+          echo "删除源码目录以释放空间..."
+          rm -rf source/
         fi
         
-        # 清理系统缓存
-        echo "清理系统缓存..."
+        # 删除交换文件
+        echo "删除交换文件..."
+        sudo swapoff /swapfile 2>/dev/null || true
+        sudo rm -f /swapfile 2>/dev/null || true
+        
+        # 最终系统清理
         sudo apt-get clean
-        npm cache clean --force 2>/dev/null || true
-        rm -rf ~/.cache/* 2>/dev/null || true
-        rm -rf ~/.npm 2>/dev/null || true
+        sudo rm -rf /var/lib/apt/lists/*
         
         echo "=== 最终磁盘空间 ==="
         df -h
@@ -538,7 +504,7 @@ jobs:
       with:
         name: "Firmware-${{ github.run_number }}-${{ github.run_attempt }}"
         path: artifacts
-        retention-days: 30
+        retention-days: 7  # 缩短保留时间
 
     - name: "📊 构建报告"
       if: always()
@@ -554,14 +520,17 @@ jobs:
           echo "🎉 构建成功! 固件已上传到Artifacts"
           echo "⏱️ 编译时长: ${{ env.BUILD_DURATION }}秒"
           echo "🌿 实际使用分支: ${{ env.ACTUAL_BRANCH }}"
-          echo "💾 磁盘空间管理: 已启用自动清理"
+          echo "💾 磁盘空间管理: 超保守模式启用"
         else
           echo "❌ 构建失败，请检查日志"
           echo ""
           echo "💡 调试建议:"
-          echo "  - 尝试使用 'stability' 编译模式"
-          echo "  - 检查配置文件是否正确"
-          echo "  - 查看是否内存不足导致中断"
-          echo "  - 检查分支名称是否正确 (main/master)"
-          echo "  - 检查磁盘空间是否充足"
+          echo "  - 磁盘空间不足是主要问题"
+          echo "  - 尝试使用更精简的配置文件"
+          echo "  - 禁用自定义功能以减少空间占用"
+          echo "  - 考虑使用预编译工具链"
+          echo "  - 检查分支名称是否正确"
         fi
+        echo ""
+        echo "=== 最终磁盘状态 ==="
+        df -h
