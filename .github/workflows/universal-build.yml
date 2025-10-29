@@ -1,4 +1,4 @@
-name: "Universal Firmware Builder - Force Toolchain Rebuild"
+name: "Universal Firmware Builder - Debug Stage 2"
 
 on:
   workflow_dispatch:
@@ -562,7 +562,7 @@ jobs:
           echo "✅ 磁盘空间充足，可以开始编译"
         fi
 
-    - name: "🏗️ 智能编译固件"
+    - name: "🏗️ 智能编译固件 - 调试阶段2"
       timeout-minutes: 240
       id: compile-firmware
       run: |
@@ -626,8 +626,8 @@ jobs:
               echo "=== 阶段1后磁盘空间 ==="
               df -h /mnt
               
-              echo "📦 阶段2: 编译网络和系统包"
-              make package/network/compile package/system/compile -j$((CPU_CORES - 1)) CC="ccache gcc" CXX="ccache g++"
+              echo "📦 阶段2: 编译网络和系统包 (详细输出用于调试)"
+              make package/network/compile package/system/compile -j1 V=s CC="ccache gcc" CXX="ccache g++"
               
               # 阶段2后空间检查
               echo "=== 阶段2后磁盘空间 ==="
@@ -658,10 +658,10 @@ jobs:
               echo "=== 阶段1后磁盘空间 ==="
               df -h /mnt
               
-              # 阶段2: 网络和系统包 - 快速编译
-              echo "📦 阶段2: 编译网络和系统包 (快速模式)"
+              # 阶段2: 网络和系统包 - 使用详细输出和单线程进行调试
+              echo "📦 阶段2: 编译网络和系统包 (详细输出+单线程用于调试)"
               PHASE2_START=$(date +%s)
-              make package/network/compile package/system/compile -j$CPU_CORES CC="ccache gcc" CXX="ccache g++"
+              make package/network/compile package/system/compile -j1 V=s CC="ccache gcc" CXX="ccache g++"
               PHASE2_END=$(date +%s)
               PHASE2_DURATION=$((PHASE2_END - PHASE2_START))
               echo "阶段2完成，耗时: ${PHASE2_DURATION}秒"
@@ -722,7 +722,7 @@ jobs:
             if [ -f "$logfile" ]; then
               echo "分析日志: $(basename $logfile)"
               echo "最后错误信息:"
-              tail -100 "$logfile" | grep -i "error\|failed\|undefined\|missing\|no such file" | tail -30 || echo "  无明确错误信息"
+              tail -200 "$logfile" | grep -i "error\|failed\|undefined\|missing\|no such file" | tail -50 || echo "  无明确错误信息"
               echo "----------------------------------------"
             fi
           done
@@ -854,5 +854,5 @@ jobs:
         else
           echo "❌ 构建失败"
           echo "🔍 请查看 Artifacts 中的详细日志和诊断信息"
-          echo "📁 特别关注 toolchain-logs/ 目录中的工具链编译日志"
+          echo "📁 特别关注 build-logs/ 目录中的阶段2编译日志"
         fi
