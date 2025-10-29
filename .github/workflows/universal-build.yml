@@ -49,6 +49,8 @@ on:
 env:
   TZ: "Asia/Shanghai"
   TERM: "linux"
+  SOURCE_DIR: "/mnt/source"
+  ARTIFACTS_DIR: "/mnt/artifacts"
 
 jobs:
   build:
@@ -59,33 +61,44 @@ jobs:
     - name: "📥 检出仓库"
       uses: actions/checkout@v4
 
-    - name: "💾 紧急磁盘空间清理"
+    - name: "💾 系统资源分析"
       run: |
-        echo "=== 紧急磁盘空间清理 ==="
+        echo "=== 系统资源分析 ==="
+        echo "📊 磁盘空间:"
         df -h
+        echo ""
+        echo "💻 CPU 信息:"
+        nproc
+        echo "CPU 核心数: $(nproc)"
+        echo ""
+        echo "🧠 内存信息:"
+        free -h
+        echo ""
+        echo "🚀 基于资源分析的性能优化建议:"
+        echo "  - 可用 CPU 核心: $(nproc)"
+        echo "  - /mnt 可用空间: $(df /mnt | awk 'NR==2 {print $4}')"
+        echo "  - 将使用优化编译策略"
+
+    - name: "🔧 设置高性能工作环境"
+      run: |
+        echo "设置高性能编译环境..."
+        sudo mkdir -p ${{ env.SOURCE_DIR }}
+        sudo mkdir -p ${{ env.ARTIFACTS_DIR }}
+        sudo chown -R runner:runner ${{ env.SOURCE_DIR }}
+        sudo chown -R runner:runner ${{ env.ARTIFACTS_DIR }}
         
-        echo "1. 清理系统缓存..."
-        sudo apt-get clean
-        sudo rm -rf /var/lib/apt/lists/*
-        sudo rm -rf /var/cache/apt/*
+        echo "🔄 创建大容量交换文件..."
+        sudo fallocate -l 8G /mnt/swapfile
+        sudo chmod 600 /mnt/swapfile
+        sudo mkswap /mnt/swapfile
+        sudo swapon /mnt/swapfile
+        echo "✅ 8GB交换文件已启用"
         
-        echo "2. 清理日志文件..."
-        sudo find /home/runner/actions-runner/cached/_diag/ -name "*.log" -delete 2>/dev/null || true
-        sudo journalctl --vacuum-time=1h 2>/dev/null || true
-        
-        echo "3. 清理临时文件..."
-        sudo rm -rf /tmp/* 2>/dev/null || true
-        sudo rm -rf /var/tmp/* 2>/dev/null || true
-        
-        echo "4. 清理不必要的软件包..."
-        sudo apt-get autoremove -y 2>/dev/null || true
-        sudo apt-get remove -y --purge man-db manpages 2>/dev/null || true
-        
-        echo "5. 清理Docker缓存（如果存在）..."
-        sudo docker system prune -f 2>/dev/null || true
-        
-        echo "=== 清理后磁盘空间 ==="
-        df -h
+        echo "⚡ 优化系统性能设置..."
+        # 提高文件描述符限制
+        ulimit -n 65536
+        # 优化编译环境
+        export FORCE_UNSAFE_CONFIGURE=1
 
     - name: "🔍 检查目录结构"
       run: |
@@ -114,423 +127,294 @@ jobs:
           exit 1
         fi
         
-        echo "✅ 找到 repositories.json 文件"
-        
         PRESET="${{ github.event.inputs.source_preset }}"
-        
         SOURCE_URL=$(jq -r ".repositories.$PRESET.url // empty" firmware-config/repositories.json)
         DESCRIPTION=$(jq -r ".repositories.$PRESET.description // empty" firmware-config/repositories.json)
         
         BRANCH="${{ github.event.inputs.source_branch }}"
         if [ "$BRANCH" = "auto" ]; then
           BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch // \"main\"" firmware-config/repositories.json)
-          echo "自动选择推荐分支: $BRANCH"
         fi
-        
-        if [ -z "$SOURCE_URL" ]; then
-          echo "❌ 错误: 无法从repositories.json获取源码URL，请检查$PRESET配置"
-          cat firmware-config/repositories.json
-          exit 1
-        fi
-        
-        if [ -z "$BRANCH" ]; then
-          echo "❌ 错误: 无法获取源码分支"
-          exit 1
-        fi
-        
-        echo "✅ 源码库: $PRESET - $DESCRIPTION"
-        echo "✅ 仓库URL: $SOURCE_URL"
-        echo "✅ 使用分支: $BRANCH"
         
         echo "SOURCE_URL=$SOURCE_URL" >> $GITHUB_ENV
         echo "SOURCE_BRANCH=$BRANCH" >> $GITHUB_ENV
+        echo "✅ 源码配置: $PRESET - $DESCRIPTION, 分支: $BRANCH"
 
-    - name: "🧹 准备构建环境"
+    - name: "🧹 准备高性能构建环境"
       run: |
         echo "安装编译依赖包..."
         sudo apt-get update
-        # 只安装最必要的包
-        sudo apt-get install -y --no-install-recommends \
-          build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
-          gettext git libncurses5-dev libssl-dev python3 python3-pip \
-          rsync unzip zlib1g-dev file wget jq
+        sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip python3-setuptools rsync unzip zlib1g-dev file wget jq ccache
         
-        echo "🔄 创建交换文件解决内存不足..."
-        sudo fallocate -l 4G /swapfile
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
-        echo "✅ 4GB交换文件已启用"
+        echo "⚡ 设置编译缓存..."
+        export CCACHE_DIR="/mnt/ccache"
+        mkdir -p $CCACHE_DIR
+        ccache -M 5G
+        ccache -s
         
-        echo "✅ 构建环境准备完成"
+        echo "✅ 高性能构建环境准备完成"
 
-    - name: "📥 获取源代码 - 极简克隆"
+    - name: "📥 高性能源码获取"
       id: clone-source
       run: |
-        echo "正在克隆源码仓库: ${{ env.SOURCE_URL }}"
-        echo "首选分支: ${{ env.SOURCE_BRANCH }}"
+        echo "正在克隆源码仓库到高速分区..."
+        cd ${{ env.SOURCE_DIR }}
         
-        # 极简克隆策略
         CLONE_SUCCESS=false
-        
-        # 尝试首选分支
         echo "🔍 尝试使用首选分支: ${{ env.SOURCE_BRANCH }}"
-        if git clone --depth 1 --filter=blob:none --branch "${{ env.SOURCE_BRANCH }}" "${{ env.SOURCE_URL }}" source 2>/dev/null; then
-          echo "✅ 使用首选分支克隆成功: ${{ env.SOURCE_BRANCH }}"
+        
+        if git clone --depth 1 --branch "${{ env.SOURCE_BRANCH }}" "${{ env.SOURCE_URL }}" . 2>/dev/null; then
+          echo "✅ 使用首选分支克隆成功"
           CLONE_SUCCESS=true
           ACTUAL_BRANCH="${{ env.SOURCE_BRANCH }}"
         else
-          echo "⚠️ 首选分支 '${{ env.SOURCE_BRANCH }}' 不存在，尝试备选分支..."
-          
-          # 根据首选分支决定备选分支
+          echo "⚠️ 尝试备选分支..."
           if [ "${{ env.SOURCE_BRANCH }}" = "main" ]; then
             ALTERNATIVE_BRANCH="master"
-          elif [ "${{ env.SOURCE_BRANCH }}" = "master" ]; then
-            ALTERNATIVE_BRANCH="main"
           else
             ALTERNATIVE_BRANCH="main"
           fi
           
-          echo "🔍 尝试备选分支: $ALTERNATIVE_BRANCH"
-          if git clone --depth 1 --filter=blob:none --branch "$ALTERNATIVE_BRANCH" "${{ env.SOURCE_URL }}" source 2>/dev/null; then
-            echo "✅ 使用备选分支克隆成功: $ALTERNATIVE_BRANCH"
+          if git clone --depth 1 --branch "$ALTERNATIVE_BRANCH" "${{ env.SOURCE_URL }}" . 2>/dev/null; then
+            echo "✅ 使用备选分支克隆成功"
             CLONE_SUCCESS=true
             ACTUAL_BRANCH="$ALTERNATIVE_BRANCH"
           else
-            # 最后尝试：不指定分支
-            echo "🔍 尝试无分支克隆..."
-            if git clone --depth 1 --filter=blob:none "${{ env.SOURCE_URL }}" source 2>/dev/null; then
-              echo "✅ 无分支克隆成功，将使用默认分支"
+            if git clone --depth 1 "${{ env.SOURCE_URL }}" . 2>/dev/null; then
+              echo "✅ 无分支克隆成功"
               CLONE_SUCCESS=true
-              cd source
               ACTUAL_BRANCH=$(git branch --show-current)
-              cd ..
             fi
           fi
         fi
         
         if [ "$CLONE_SUCCESS" = "false" ]; then
-          echo "❌ 所有克隆尝试都失败，请检查仓库URL和分支名称"
+          echo "❌ 克隆失败"
           exit 1
         fi
         
         echo "ACTUAL_BRANCH=$ACTUAL_BRANCH" >> $GITHUB_ENV
-        echo "✅ 源码克隆完成，实际使用分支: $ACTUAL_BRANCH"
+        echo "✅ 源码克隆完成: $ACTUAL_BRANCH"
 
-    - name: "💾 克隆后磁盘检查"
-      run: |
-        echo "=== 源码克隆后磁盘空间 ==="
-        df -h
-        echo "=== 源码目录大小 ==="
-        du -sh source/ || echo "无法获取源码目录大小"
-
-    - name: "🔧 源码初始化 - 精简版"
+    - name: "🔧 源码初始化与优化"
       timeout-minutes: 20
       run: |
-        cd source
-        echo "初始化源码树（精简模式）..."
+        cd ${{ env.SOURCE_DIR }}
+        echo "初始化源码树..."
         
-        echo "步骤1: 仅更新必要的feeds..."
-        ./scripts/feeds update packages
-        ./scripts/feeds update luci
+        echo "步骤1: 并行更新feeds..."
+        ./scripts/feeds update -a &
+        ./scripts/feeds update packages &
+        ./scripts/feeds update luci &
+        wait
         
-        echo "步骤2: 安装基础feeds..."
+        echo "步骤2: 安装feeds..."
         ./scripts/feeds install -a
         
         echo "✅ Feeds更新完成"
 
-    - name: "🎨 应用自定义配置"
+    - name: "🎨 应用配置"
       run: |
-        cd source
-        CONFIG_FILE="../firmware-config/${{ github.event.inputs.config_profile }}"
-        echo "正在应用配置文件: $CONFIG_FILE"
+        cd ${{ env.SOURCE_DIR }}
+        CONFIG_FILE="$GITHUB_WORKSPACE/firmware-config/${{ github.event.inputs.config_profile }}"
         
         if [ ! -f "$CONFIG_FILE" ]; then
-          echo "❌ 错误: 配置文件不存在: $CONFIG_FILE"
-          ls -la ../firmware-config/configs/ || echo "configs目录不存在"
+          echo "❌ 配置文件不存在: $CONFIG_FILE"
           exit 1
         fi
         
         cp "$CONFIG_FILE" .config
-        echo "✅ 配置文件应用完成"
+        echo "✅ 配置应用完成"
 
-    - name: "🔧 修复配置环境"
+    - name: "🔧 性能优化配置"
       run: |
-        cd source
-        echo "修复无头环境配置问题..."
+        cd ${{ env.SOURCE_DIR }}
+        echo "应用性能优化配置..."
         
+        # 禁用调试信息以加速编译
+        sed -i 's/CONFIG_DEBUG=y/# CONFIG_DEBUG is not set/' .config 2>/dev/null || true
         sed -i 's/CONFIG_DEVEL=y/# CONFIG_DEVEL is not set/' .config 2>/dev/null || true
         sed -i 's/CONFIG_BUILD_LOG=y/# CONFIG_BUILD_LOG is not set/' .config 2>/dev/null || true
         
-        echo "应用非交互式配置..."
-        yes "" | make oldconfig >/dev/null 2>&1 || true
+        # 启用ccache加速
+        echo "CONFIG_CCACHE=y" >> .config
         
-        echo "✅ 配置环境修复完成"
+        yes "" | make oldconfig >/dev/null 2>&1 || true
+        echo "✅ 性能优化配置完成"
 
     - name: "🛠️ 设置工具链策略"
       id: toolchain-setup
       run: |
-        cd source
+        cd ${{ env.SOURCE_DIR }}
         
         STRATEGY="${{ github.event.inputs.toolchain_strategy }}"
         echo "工具链策略: $STRATEGY"
         
+        # 使用更多线程编译工具链
         case $STRATEGY in
           "prebuilt")
             echo "🔧 使用预编译工具链..."
-            if make tools/install toolchain/install -j1; then
+            if make tools/install toolchain/install -j$(nproc); then
               echo "✅ 预编译工具链安装成功"
               echo "result=prebuilt" >> $GITHUB_OUTPUT
-              echo "status=success" >> $GITHUB_OUTPUT
             else
-              echo "❌ 预编译工具链安装失败，将使用本地编译"
+              echo "❌ 预编译工具链安装失败"
               echo "result=local" >> $GITHUB_OUTPUT
-              echo "status=fallback" >> $GITHUB_OUTPUT
             fi
             ;;
-          "local")
+          "local"|*)
             echo "🔧 使用本地编译工具链..."
             echo "result=local" >> $GITHUB_OUTPUT
-            echo "status=success" >> $GITHUB_OUTPUT
-            ;;
-          "auto"|*)
-            echo "🔧 自动选择工具链策略..."
-            if make tools/install toolchain/install -j1; then
-              echo "✅ 预编译工具链可用"
-              echo "result=prebuilt" >> $GITHUB_OUTPUT
-              echo "status=success" >> $GITHUB_OUTPUT
-            else
-              echo "⚠️ 预编译工具链不可用，将使用本地编译"
-              echo "result=local" >> $GITHUB_OUTPUT
-              echo "status=fallback" >> $GITHUB_OUTPUT
-            fi
             ;;
         esac
 
     - name: "📦 处理预编译IPK包"
       if: github.event.inputs.enable_custom_features == 'true'
       run: |
-        cd source
-        IPK_DIR="../firmware-config/custom-features/prebuilt-ipks"
+        cd ${{ env.SOURCE_DIR }}
+        IPK_DIR="$GITHUB_WORKSPACE/firmware-config/custom-features/prebuilt-ipks"
         
-        if [ ! -d "$IPK_DIR" ]; then
-          echo "ℹ️ 预编译IPK包目录不存在: $IPK_DIR"
-          exit 0
+        if [ -d "$IPK_DIR" ]; then
+          IPK_FILES=$(find "$IPK_DIR" -name "*.ipk" -type f)
+          if [ -n "$IPK_FILES" ]; then
+            mkdir -p package/base-files/files/usr/lib/opkg/custom
+            for ipk in $IPK_FILES; do
+              echo "📥 复制IPK包: $(basename "$ipk")"
+              cp "$ipk" package/base-files/files/usr/lib/opkg/custom/
+            done
+            echo "✅ 预编译IPK包处理完成"
+          fi
         fi
-        
-        echo "🔍 查找预编译IPK包..."
-        IPK_FILES=$(find "$IPK_DIR" -name "*.ipk" -type f)
-        
-        if [ -z "$IPK_FILES" ]; then
-          echo "ℹ️ 未找到预编译IPK包"
-          exit 0
-        fi
-        
-        echo "找到以下IPK包:"
-        echo "$IPK_FILES"
-        
-        mkdir -p package/base-files/files/usr/lib/opkg/custom
-        
-        for ipk in $IPK_FILES; do
-          echo "📥 复制IPK包: $(basename "$ipk")"
-          cp "$ipk" package/base-files/files/usr/lib/opkg/custom/
-        done
-        
-        echo "✅ 预编译IPK包处理完成"
 
     - name: "🛠️ 执行自定义脚本"
       if: github.event.inputs.enable_custom_features == 'true'
       run: |
-        cd source
-        SCRIPTS_DIR="../firmware-config/custom-features/scripts"
+        cd ${{ env.SOURCE_DIR }}
+        SCRIPTS_DIR="$GITHUB_WORKSPACE/firmware-config/custom-features/scripts"
         
-        if [ ! -d "$SCRIPTS_DIR" ]; then
-          echo "ℹ️ 自定义脚本目录不存在: $SCRIPTS_DIR"
-          exit 0
+        if [ -d "$SCRIPTS_DIR" ]; then
+          for script in $(find "$SCRIPTS_DIR" -name "*.sh" -type f | sort); do
+            echo "执行脚本: $(basename "$script")"
+            chmod +x "$script"
+            bash "$script" || exit 1
+          done
         fi
-        
-        SCRIPTS=$(find "$SCRIPTS_DIR" -name "*.sh" -type f | sort)
-        
-        if [ -z "$SCRIPTS" ]; then
-          echo "ℹ️ 未找到任何脚本文件"
-          exit 0
-        fi
-        
-        for script in $SCRIPTS; do
-          echo "执行脚本: $(basename "$script")"
-          chmod +x "$script"
-          if bash "$script"; then
-            echo "✅ $(basename "$script") 执行成功"
-          else
-            echo "❌ $(basename "$script") 执行失败"
-            exit 1
-          fi
-        done
-        
-        echo "✅ 所有自定义脚本执行完成"
 
     - name: "🔍 验证配置"
       run: |
-        cd source
-        echo "验证配置文件..."
-        make defconfig >/dev/null 2>&1 || echo "配置验证完成（非交互式）"
+        cd ${{ env.SOURCE_DIR }}
+        make defconfig >/dev/null 2>&1
         echo "✅ 配置验证完成"
 
-    - name: "💾 编译前紧急空间检查"
+    - name: "🏗️ 高性能编译固件"
+      timeout-minutes: 120
       run: |
-        echo "=== 编译前磁盘空间紧急检查 ==="
-        df -h
-        
-        # 如果空间仍然不足，执行额外清理
-        AVAILABLE_SPACE=$(df / | awk 'NR==2 {print $4}')
-        if [ "$AVAILABLE_SPACE" -lt 8000000 ]; then  # 如果小于8GB
-          echo "⚠️ 磁盘空间仍然紧张，执行额外清理..."
-          cd source
-          # 清理一些编译缓存
-          rm -rf tmp/ 2>/dev/null || true
-          rm -rf logs/ 2>/dev/null || true
-          cd ..
-          sudo rm -rf /var/log/*.gz 2>/dev/null || true
-          sudo rm -rf /var/log/*.old 2>/dev/null || true
-          echo "✅ 额外清理完成"
-          df -h
-        fi
-
-    - name: "🏗️ 编译固件 - 超保守模式"
-      timeout-minutes: 240
-      run: |
-        cd source
+        cd ${{ env.SOURCE_DIR }}
         export TERM=linux
         export FORCE_UNSAFE_CONFIGURE=1
         
-        # 超保守内存设置
-        export MAKE_TERMOUT=
-        export MAKE_TERMERR=
-        export NUM_CPU=1  # 强制单线程
+        # 设置性能优化环境
+        export CCACHE_DIR="/mnt/ccache"
+        export CCACHE_SLOPPINESS=file_macro,include_file_mtime,include_file_ctime,time_macros
+        export CCACHE_MAXSIZE=5G
+        
+        # 获取CPU核心数
+        CPU_CORES=$(nproc)
+        echo "💻 可用CPU核心数: $CPU_CORES"
         
         START_TIME=$(date +%s)
         
-        echo "开始编译固件 (超保守模式)..."
+        echo "🚀 开始高性能编译..."
         echo "📊 编译参数:"
         echo "  - 工具链策略: ${{ steps.toolchain-setup.outputs.result }}"
         echo "  - 编译优化: ${{ github.event.inputs.build_optimization }}"
         echo "  - 自定义功能: ${{ github.event.inputs.enable_custom_features }}"
         echo "  - 实际分支: ${{ env.ACTUAL_BRANCH }}"
+        echo "  - CPU核心: $CPU_CORES"
+        echo "  - 工作目录: ${{ env.SOURCE_DIR }}"
+        echo "  - CCACHE: 已启用 (5GB缓存)"
         
-        # 无论用户选择什么优化策略，都使用单线程
-        echo "🛡️ 超保守模式: 单线程编译 (避免磁盘空间不足)"
-        if make -j1 V=s; then
-          echo "✅ 编译成功!"
-        else
-          echo "❌ 编译失败"
-          # 尝试更保守的方式
-          echo "🔄 尝试无并行编译..."
-          make V=s
-        fi
+        # 高性能编译策略
+        case "${{ github.event.inputs.build_optimization }}" in
+          "speed")
+            echo "🚀 极速模式: 使用 $CPU_CORES 线程 + 无详细输出"
+            # 使用所有CPU核心，不输出详细日志
+            if make -j$CPU_CORES CC="ccache gcc" CXX="ccache g++"; then
+              echo "✅ 极速编译成功!"
+            else
+              echo "⚠️ 极速模式失败，尝试标准模式..."
+              make -j$((CPU_CORES - 1)) V=s
+            fi
+            ;;
+          "stability")
+            echo "🛡️ 稳定模式: 使用 $((CPU_CORES - 1)) 线程 + 详细输出"
+            make -j$((CPU_CORES - 1)) V=s CC="ccache gcc" CXX="ccache g++"
+            ;;
+          "balanced"|*)
+            echo "⚖️ 平衡模式: 使用 $CPU_CORES 线程 + 基础输出"
+            make -j$CPU_CORES CC="ccache gcc" CXX="ccache g++"
+            ;;
+        esac
         
         END_TIME=$(date +%s)
         DURATION=$((END_TIME - START_TIME))
-        echo "✅ 编译完成! 耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
         echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
+        
+        # 显示ccache统计
+        echo "📊 CCache 统计:"
+        ccache -s
+        
+        echo "✅ 编译完成! 耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
 
     - name: "📦 收集构建产物"
       if: success()
       run: |
-        cd source
-        echo "收集编译输出文件..."
+        cd ${{ env.SOURCE_DIR }}
+        echo "收集编译产物..."
         
-        mkdir -p ../artifacts
+        mkdir -p ${{ env.ARTIFACTS_DIR }}
         
-        # 优先查找固件文件
-        FIRMWARE_FILES=$(find bin/targets -type f \( -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" \) 2>/dev/null | head -10)
+        # 查找并复制固件文件
+        find bin/targets -type f \( -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" \) -exec cp --parents {} ${{ env.ARTIFACTS_DIR }}/ \; 2>/dev/null || true
         
-        if [ -n "$FIRMWARE_FILES" ]; then
-          echo "✅ 找到固件文件:"
-          echo "$FIRMWARE_FILES"
-          for file in $FIRMWARE_FILES; do
-            echo "📦 复制: $(basename "$file")"
-            mkdir -p "../artifacts/$(dirname "$file")"
-            cp "$file" "../artifacts/$file"
-          done
-        else
-          echo "⚠️ 未找到标准固件文件，收集所有bin目录文件..."
-          find bin/ -type f -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" | head -20
-        fi
+        # 复制到工作目录
+        mkdir -p $GITHUB_WORKSPACE/artifacts
+        cp -r ${{ env.ARTIFACTS_DIR }}/* $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
         
-        {
-          echo "=== 固件构建信息 ==="
-          echo "源码: ${{ env.SOURCE_URL }}"
-          echo "请求分支: ${{ env.SOURCE_BRANCH }}"
-          echo "实际分支: ${{ env.ACTUAL_BRANCH }}"
-          echo "配置: ${{ github.event.inputs.config_profile }}"
-          echo "优化: ${{ github.event.inputs.build_optimization }}"
-          echo "工具链: ${{ steps.toolchain-setup.outputs.result }}"
-          echo "自定义功能: ${{ github.event.inputs.enable_custom_features }}"
-          echo "构建时间: $(date)"
-          echo "编译时长: ${{ env.BUILD_DURATION }}秒"
-          echo "GitHub Run: ${{ github.run_id }}-${{ github.run_attempt }}"
-          echo "编译模式: 超保守单线程 (磁盘空间优化)"
-          echo ""
-          echo "=== 文件列表 ==="
-          find bin/targets -type f 2>/dev/null | sort || echo "无法列出文件"
-        } > ../artifacts/build-info.txt
+        echo "✅ 产物收集完成"
 
-    - name: "🧹 最终清理释放空间"
+    - name: "🧹 清理环境"
       if: always()
       run: |
-        echo "=== 最终磁盘空间清理 ==="
-        
-        # 删除源码目录（保留artifacts）
-        if [ -d "source" ]; then
-          echo "删除源码目录以释放空间..."
-          rm -rf source/
-        fi
-        
-        # 删除交换文件
-        echo "删除交换文件..."
-        sudo swapoff /swapfile 2>/dev/null || true
-        sudo rm -f /swapfile 2>/dev/null || true
-        
-        # 最终系统清理
-        sudo apt-get clean
-        sudo rm -rf /var/lib/apt/lists/*
-        
-        echo "=== 最终磁盘空间 ==="
-        df -h
+        echo "清理编译环境..."
+        sudo rm -rf ${{ env.SOURCE_DIR }} ${{ env.ARTIFACTS_DIR }} /mnt/ccache /mnt/swapfile 2>/dev/null || true
+        sudo swapoff /mnt/swapfile 2>/dev/null || true
 
     - name: "💾 上传构建产物"
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: "Firmware-${{ github.run_number }}-${{ github.run_attempt }}"
+        name: "Firmware-${{ github.run_number }}-${{ env.ACTUAL_BRANCH }}"
         path: artifacts
-        retention-days: 7  # 缩短保留时间
+        retention-days: 30
 
-    - name: "📊 构建报告"
+    - name: "📊 性能报告"
       if: always()
       run: |
-        echo "=== 构建报告 ==="
+        echo "=== 高性能编译报告 ==="
         echo "状态: ${{ job.status }}"
         echo "源码: ${{ env.SOURCE_URL }}"
-        echo "请求分支: ${{ env.SOURCE_BRANCH }}"
-        echo "实际分支: ${{ env.ACTUAL_BRANCH }}"
-        echo "配置: ${{ github.event.inputs.config_profile }}"
+        echo "分支: ${{ env.ACTUAL_BRANCH }}"
         
         if [ "${{ job.status }}" = "success" ]; then
-          echo "🎉 构建成功! 固件已上传到Artifacts"
+          echo "🎉 构建成功!"
           echo "⏱️ 编译时长: ${{ env.BUILD_DURATION }}秒"
-          echo "🌿 实际使用分支: ${{ env.ACTUAL_BRANCH }}"
-          echo "💾 磁盘空间管理: 超保守模式启用"
+          echo "⚡ 性能特性:"
+          echo "  - 使用 /mnt 分区 (66G 空间)"
+          echo "  - 8GB 交换文件"
+          echo "  - CCache 编译缓存"
+          echo "  - 多线程并行编译"
+          echo "  - 性能优化配置"
         else
-          echo "❌ 构建失败，请检查日志"
-          echo ""
-          echo "💡 调试建议:"
-          echo "  - 磁盘空间不足是主要问题"
-          echo "  - 尝试使用更精简的配置文件"
-          echo "  - 禁用自定义功能以减少空间占用"
-          echo "  - 考虑使用预编译工具链"
-          echo "  - 检查分支名称是否正确"
+          echo "❌ 构建失败"
         fi
-        echo ""
-        echo "=== 最终磁盘状态 ==="
-        df -h
