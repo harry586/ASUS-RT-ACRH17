@@ -1,4 +1,4 @@
-name: "Universal Firmware Builder - Fixed Toolchain"
+name: "Universal Firmware Builder - Fixed Toolchain Compilation"
 
 on:
   workflow_dispatch:
@@ -163,7 +163,7 @@ jobs:
         sudo apt-get install -y flex bison byacc
         
         # 其他可能需要的依赖
-        sudo apt-get install -y subversion mercurial curl cmake ninja-build libelf-dev libssl-dev
+        sudo apt-get install -y subversion mercurial curl cmake ninja-build libelf-dev libssl-dev zlib1g-dev
         
         # 检查关键工具版本
         echo "=== 关键工具版本检查 ==="
@@ -324,19 +324,14 @@ jobs:
         # 启用ccache
         echo "CONFIG_CCACHE=y" >> .config
         
-        # 修复工具链问题 - 确保使用系统工具
-        echo "# 使用系统工具链设置" >> .config
-        echo "CONFIG_USE_MUSL=y" >> .config
-        echo "CONFIG_USE_GLIBC=n" >> .config
-        
         # 自动处理配置
         echo "运行 oldconfig..."
         yes "" | make oldconfig >/dev/null 2>&1 || echo "oldconfig 完成"
         
         echo "✅ 性能优化配置完成"
 
-    - name: "🛠️ 修复工具链编译"
-      timeout-minutes: 90
+    - name: "🛠️ 修复工具链编译问题"
+      timeout-minutes: 120
       id: toolchain-setup
       run: |
         cd ${{ env.SOURCE_DIR }}
@@ -346,11 +341,20 @@ jobs:
         STRATEGY="${{ github.event.inputs.toolchain_strategy }}"
         echo "工具链策略: $STRATEGY"
         
+        # 创建工具链编译日志目录
+        TOOLCHAIN_LOGS_DIR="/home/runner/toolchain-logs"
+        mkdir -p $TOOLCHAIN_LOGS_DIR
+        
         # 首先编译 host 工具 - 使用详细输出以便调试
         echo "🔧 编译 host 工具..."
-        if ! make tools/compile -j$(($(nproc) - 1)) V=s; then
+        if ! make tools/compile -j$(($(nproc) - 1)) V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/host-tools.log; then
           echo "❌ Host工具编译失败，尝试单线程编译..."
-          make tools/compile -j1 V=s || exit 1
+          if ! make tools/compile -j1 V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/host-tools-single.log; then
+            echo "❌ Host工具单线程编译也失败"
+            echo "=== 错误分析 ==="
+            tail -50 $TOOLCHAIN_LOGS_DIR/host-tools-single.log | grep -i "error\|failed" | tail -20
+            exit 1
+          fi
         fi
         
         echo "✅ Host工具编译完成"
@@ -366,10 +370,11 @@ jobs:
           exit 1
         fi
         
+        # 工具链编译策略
         case $STRATEGY in
           "prebuilt")
             echo "🔧 使用预编译工具链..."
-            if make toolchain/install -j$(nproc) V=s; then
+            if make toolchain/install -j$(nproc) V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/toolchain-install.log; then
               echo "✅ 预编译工具链安装成功"
               echo "result=prebuilt" >> $GITHUB_OUTPUT
             else
@@ -386,9 +391,14 @@ jobs:
         # 如果是本地编译或回退到本地编译，编译工具链
         if [ "${{ steps.toolchain-setup.outputs.result }}" = "local" ]; then
           echo "🔧 编译本地工具链 (详细输出)..."
-          if ! make toolchain/compile -j$(($(nproc) - 1)) V=s; then
+          if ! make toolchain/compile -j$(($(nproc) - 1)) V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/toolchain-compile.log; then
             echo "❌ 工具链编译失败，尝试单线程编译..."
-            make toolchain/compile -j1 V=s || exit 1
+            if ! make toolchain/compile -j1 V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/toolchain-compile-single.log; then
+              echo "❌ 工具链单线程编译也失败"
+              echo "=== 错误分析 ==="
+              tail -50 $TOOLCHAIN_LOGS_DIR/toolchain-compile-single.log | grep -i "error\|failed" | tail -20
+              exit 1
+            fi
           fi
           echo "✅ 本地工具链编译完成"
         fi
@@ -448,14 +458,27 @@ jobs:
         if [ -z "$TARGET_GCC" ]; then
           echo "❌ 严重错误: 未找到目标架构交叉编译器!"
           echo "=== 详细目录结构 ==="
-          find staging_dir/toolchain-*/ -type f -name "*gcc" 2>/dev/null || echo "无 GCC 编译器"
-          echo "=== 工具链 bin 目录内容 ==="
           for dir in $TOOLCHAIN_DIRS; do
-            if [ -d "$dir/bin" ]; then
-              echo "目录 $dir/bin:"
-              ls -la "$dir/bin/" | head -20
+            echo "检查目录: $dir"
+            if [ -d "$dir" ]; then
+              echo "目录内容:"
+              ls -la "$dir" | head -20
+              if [ -d "$dir/bin" ]; then
+                echo "bin 目录内容:"
+                ls -la "$dir/bin/" | head -20
+              else
+                echo "⚠️ 没有 bin 目录"
+              fi
             fi
           done
+          
+          # 检查编译日志中的错误
+          TOOLCHAIN_LOGS_DIR="/home/runner/toolchain-logs"
+          if [ -f "$TOOLCHAIN_LOGS_DIR/toolchain-compile.log" ]; then
+            echo "=== 工具链编译错误 ==="
+            grep -i "error\|failed" "$TOOLCHAIN_LOGS_DIR/toolchain-compile.log" | tail -20
+          fi
+          
           exit 1
         fi
         
@@ -471,6 +494,20 @@ jobs:
         
         echo ""
         echo "✅ 工具链验证完成 - 工具链完整"
+
+    - name: "📦 收集工具链日志"
+      if: always()
+      run: |
+        echo "收集工具链编译日志..."
+        TOOLCHAIN_LOGS_DIR="/home/runner/toolchain-logs"
+        mkdir -p ${{ env.ARTIFACTS_DIR }}/toolchain-logs
+        
+        if [ -d "$TOOLCHAIN_LOGS_DIR" ]; then
+          cp -r $TOOLCHAIN_LOGS_DIR/* ${{ env.ARTIFACTS_DIR }}/toolchain-logs/ 2>/dev/null || true
+          echo "✅ 工具链日志收集完成"
+        else
+          echo "⚠️ 无工具链日志目录"
+        fi
 
     - name: "📦 处理预编译IPK包"
       if: github.event.inputs.enable_custom_features == 'true'
@@ -802,6 +839,7 @@ jobs:
         sudo rm -rf ${{ env.SOURCE_DIR }} ${{ env.ARTIFACTS_DIR }} /mnt/swapfile 2>/dev/null || true
         rm -rf ${{ env.CCACHE_DIR }} 2>/dev/null || true
         rm -rf /home/runner/build-logs 2>/dev/null || true
+        rm -rf /home/runner/toolchain-logs 2>/dev/null || true
         echo "✅ 环境清理完成"
 
     - name: "💾 上传构建产物"
@@ -825,4 +863,5 @@ jobs:
         else
           echo "❌ 构建失败"
           echo "🔍 请查看 Artifacts 中的详细日志和诊断信息"
+          echo "📁 特别关注 toolchain-logs/ 目录中的工具链编译日志"
         fi
