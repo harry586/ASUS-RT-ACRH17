@@ -193,11 +193,30 @@ jobs:
         echo "ACTUAL_BRANCH=$ACTUAL_BRANCH" >> $GITHUB_ENV
         echo "✅ 源码克隆完成: $ACTUAL_BRANCH"
 
+    - name: "💾 源码克隆后空间检查"
+      run: |
+        echo "=== 源码克隆后磁盘空间检查 ==="
+        df -h
+        
+        # 检查可用空间是否足够继续编译
+        AVAILABLE_GB=$(df /mnt | awk 'NR==2 {gsub("G","",$4); print int($4)}')
+        echo "可用空间: ${AVAILABLE_GB}GB"
+        
+        if [ "$AVAILABLE_GB" -lt 20 ]; then
+          echo "⚠️ 警告: 磁盘空间不足20GB，编译可能会失败"
+          echo "💡 建议: 清理不必要的文件或使用更精简的配置"
+        else
+          echo "✅ 磁盘空间充足"
+        fi
+
     - name: "🔧 源码初始化与优化"
-      timeout-minutes: 20
+      timeout-minutes: 30
+      id: feeds-update
       run: |
         cd ${{ env.SOURCE_DIR }}
-        echo "初始化源码树..."
+        
+        START_TIME=$(date +%s)
+        echo "开始源码初始化..."
         
         echo "步骤1: 并行更新feeds..."
         ./scripts/feeds update -a &
@@ -207,6 +226,17 @@ jobs:
         
         echo "步骤2: 安装feeds..."
         ./scripts/feeds install -a
+        
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+        
+        # 记录时长（如果超过阈值）
+        if [ "$DURATION" -gt 600 ]; then  # 超过10分钟
+          echo "⏱️ Feeds更新耗时: ${DURATION}秒 (较长)"
+          echo "feeds_duration=$DURATION" >> $GITHUB_ENV
+        elif [ "$DURATION" -gt 300 ]; then  # 超过5分钟
+          echo "⏱️ Feeds更新耗时: ${DURATION}秒"
+        fi
         
         echo "✅ Feeds更新完成"
 
@@ -241,8 +271,11 @@ jobs:
 
     - name: "🛠️ 设置工具链策略"
       id: toolchain-setup
+      timeout-minutes: 45
       run: |
         cd ${{ env.SOURCE_DIR }}
+        
+        START_TIME=$(date +%s)
         
         STRATEGY="${{ github.event.inputs.toolchain_strategy }}"
         echo "工具链策略: $STRATEGY"
@@ -264,6 +297,17 @@ jobs:
             echo "result=local" >> $GITHUB_OUTPUT
             ;;
         esac
+        
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+        
+        # 记录时长（如果超过阈值）
+        if [ "$DURATION" -gt 1200 ]; then  # 超过20分钟
+          echo "⏱️ 工具链编译耗时: ${DURATION}秒 (较长)"
+          echo "toolchain_duration=$DURATION" >> $GITHUB_ENV
+        elif [ "$DURATION" -gt 600 ]; then  # 超过10分钟
+          echo "⏱️ 工具链编译耗时: ${DURATION}秒"
+        fi
 
     - name: "📦 处理预编译IPK包"
       if: github.event.inputs.enable_custom_features == 'true'
@@ -300,11 +344,40 @@ jobs:
     - name: "🔍 验证配置"
       run: |
         cd ${{ env.SOURCE_DIR }}
+        echo "验证配置文件..."
         make defconfig >/dev/null 2>&1
         echo "✅ 配置验证完成"
 
-    - name: "🏗️ 高性能编译固件"
-      timeout-minutes: 120
+    - name: "💾 编译前关键空间检查"
+      run: |
+        echo "=== 编译前关键空间检查 ==="
+        echo "根分区 (/):"
+        df -h /
+        echo ""
+        echo "数据分区 (/mnt):"
+        df -h /mnt
+        
+        # 检查可用空间是否足够编译
+        AVAILABLE_GB=$(df /mnt | awk 'NR==2 {gsub("G","",$4); print int($4)}')
+        echo ""
+        echo "可用空间: ${AVAILABLE_GB}GB"
+        
+        if [ "$AVAILABLE_GB" -lt 15 ]; then
+          echo "❌ 错误: 磁盘空间不足15GB，无法安全编译"
+          echo "💡 建议:"
+          echo "  - 清理不必要的文件"
+          echo "  - 使用更精简的配置文件"
+          echo "  - 禁用部分自定义功能"
+          exit 1
+        elif [ "$AVAILABLE_GB" -lt 25 ]; then
+          echo "⚠️ 警告: 磁盘空间紧张 (${AVAILABLE_GB}GB)，编译可能会失败"
+        else
+          echo "✅ 磁盘空间充足，可以开始编译"
+        fi
+
+    - name: "🏗️ 智能编译固件 - 速度与诊断兼顾"
+      timeout-minutes: 180
+      id: compile-firmware
       run: |
         cd ${{ env.SOURCE_DIR }}
         export TERM=linux
@@ -319,66 +392,260 @@ jobs:
         CPU_CORES=$(nproc)
         echo "💻 可用CPU核心数: $CPU_CORES"
         
+        # 创建编译日志目录
+        mkdir -p /tmp/build-logs
+        
         START_TIME=$(date +%s)
         
-        echo "🚀 开始高性能编译..."
+        echo "🚀 开始智能编译 (速度与诊断兼顾)..."
         echo "📊 编译参数:"
         echo "  - 工具链策略: ${{ steps.toolchain-setup.outputs.result }}"
         echo "  - 编译优化: ${{ github.event.inputs.build_optimization }}"
         echo "  - 自定义功能: ${{ github.event.inputs.enable_custom_features }}"
         echo "  - 实际分支: ${{ env.ACTUAL_BRANCH }}"
         echo "  - CPU核心: $CPU_CORES"
-        echo "  - 工作目录: ${{ env.SOURCE_DIR }}"
         echo "  - CCACHE: 已启用 (5GB缓存)"
         
-        # 高性能编译策略
+        # 智能编译策略
         case "${{ github.event.inputs.build_optimization }}" in
           "speed")
-            echo "🚀 极速模式: 使用 $CPU_CORES 线程 + 无详细输出"
-            # 使用所有CPU核心，不输出详细日志
-            if make -j$CPU_CORES CC="ccache gcc" CXX="ccache g++"; then
+            echo "🚀 极速模式: 使用 $CPU_CORES 线程 + 智能错误捕获"
+            {
+              echo "📦 阶段1: 快速编译所有包"
+              make -j$CPU_CORES CC="ccache gcc" CXX="ccache g++" 2>&1
+            } | tee /tmp/build-logs/speed.log
+            
+            if [ ${PIPESTATUS[0]} -eq 0 ]; then
               echo "✅ 极速编译成功!"
             else
-              echo "⚠️ 极速模式失败，尝试标准模式..."
-              make -j$((CPU_CORES - 1)) V=s
+              echo "❌ 极速编译失败，启用诊断..."
+              echo "=== 错误摘要 ==="
+              grep -i "error\|failed" /tmp/build-logs/speed.log | tail -10
+              exit 1
             fi
             ;;
           "stability")
             echo "🛡️ 稳定模式: 使用 $((CPU_CORES - 1)) 线程 + 详细输出"
-            make -j$((CPU_CORES - 1)) V=s CC="ccache gcc" CXX="ccache g++"
+            make -j$((CPU_CORES - 1)) V=s CC="ccache gcc" CXX="ccache g++" 2>&1 | tee /tmp/build-logs/stability.log
             ;;
           "balanced"|*)
-            echo "⚖️ 平衡模式: 使用 $CPU_CORES 线程 + 基础输出"
-            make -j$CPU_CORES CC="ccache gcc" CXX="ccache g++"
+            echo "⚖️ 平衡模式: 使用 $CPU_CORES 线程 + 分阶段优化"
+            {
+              # 阶段1: 工具链和基础包 - 快速编译
+              echo "📦 阶段1: 编译工具链和基础包 (快速模式)"
+              PHASE1_START=$(date +%s)
+              make tools/compile toolchain/compile -j$CPU_CORES CC="ccache gcc" CXX="ccache g++" 2>&1
+              PHASE1_END=$(date +%s)
+              PHASE1_DURATION=$((PHASE1_END - PHASE1_START))
+              echo "阶段1完成，耗时: ${PHASE1_DURATION}秒"
+              
+              # 阶段1后空间检查
+              echo "=== 阶段1后磁盘空间 ==="
+              df -h /mnt
+              
+              # 阶段2: 内核和关键包 - 详细输出
+              echo "🔧 阶段2: 编译内核和关键包 (详细模式)"
+              PHASE2_START=$(date +%s)
+              make target/linux/compile package/kernel/linux/compile -j$CPU_CORES V=s CC="ccache gcc" CXX="ccache g++" 2>&1
+              PHASE2_END=$(date +%s)
+              PHASE2_DURATION=$((PHASE2_END - PHASE2_START))
+              echo "阶段2完成，耗时: ${PHASE2_DURATION}秒"
+              
+              # 阶段2后空间检查
+              echo "=== 阶段2后磁盘空间 ==="
+              df -h /mnt
+              
+              # 阶段3: 剩余包 - 快速编译但监控错误
+              echo "📦 阶段3: 编译剩余包 (快速模式 + 错误监控)"
+              PHASE3_START=$(date +%s)
+              make package/compile -j$CPU_CORES CC="ccache gcc" CXX="ccache g++" 2>&1
+              PHASE3_END=$(date +%s)
+              PHASE3_DURATION=$((PHASE3_END - PHASE3_START))
+              echo "阶段3完成，耗时: ${PHASE3_DURATION}秒"
+              
+              # 阶段3后空间检查
+              echo "=== 阶段3后磁盘空间 ==="
+              df -h /mnt
+              
+              # 阶段4: 最终组装
+              echo "🔧 阶段4: 最终组装"
+              PHASE4_START=$(date +%s)
+              make target/install -j$CPU_CORES CC="ccache gcc" CXX="ccache g++" 2>&1
+              PHASE4_END=$(date +%s)
+              PHASE4_DURATION=$((PHASE4_END - PHASE4_START))
+              echo "阶段4完成，耗时: ${PHASE4_DURATION}秒"
+              
+            } | tee /tmp/build-logs/balanced.log
+            
+            # 记录阶段时长（如果超过阈值）
+            if [ "$PHASE1_DURATION" -gt 1200 ]; then
+              echo "⏱️ 阶段1耗时较长: ${PHASE1_DURATION}秒"
+            fi
+            if [ "$PHASE2_DURATION" -gt 1800 ]; then
+              echo "⏱️ 阶段2耗时较长: ${PHASE2_DURATION}秒"
+            fi
+            if [ "$PHASE3_DURATION" -gt 2400 ]; then
+              echo "⏱️ 阶段3耗时较长: ${PHASE3_DURATION}秒"
+            fi
+            
+            # 检查最终结果
+            if [ ${PIPESTATUS[0]} -eq 0 ]; then
+              echo "✅ 分阶段编译成功!"
+            else
+              echo "❌ 编译失败，分析阶段日志..."
+              # 分析哪个阶段失败
+              if grep -q "Error" /tmp/build-logs/balanced.log; then
+                echo "=== 关键错误 ==="
+                grep -A5 -B5 "Error" /tmp/build-logs/balanced.log | tail -20
+              fi
+              exit 1
+            fi
             ;;
         esac
         
-        END_TIME=$(date +%s)
-        DURATION=$((END_TIME - START_TIME))
-        echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
+        # 检查编译结果
+        if [ $? -eq 0 ]; then
+          echo "🎉 编译成功完成!"
+        else
+          echo "❌ 编译失败"
+          
+          # 详细的错误分析
+          echo "=== 详细错误分析 ==="
+          for logfile in /tmp/build-logs/*.log; do
+            if [ -f "$logfile" ]; then
+              echo "分析日志: $(basename $logfile)"
+              echo "最后错误:"
+              tail -50 "$logfile" | grep -i "error\|failed" | tail -10 || echo "  无明确错误信息"
+              echo ""
+            fi
+          done
+          
+          # 检查特定包的编译状态
+          echo "=== 包编译状态检查 ==="
+          for pkg in ath10k-ct samba4; do
+            if find build_dir/ -name ".pkgdir_${pkg}" -o -name ".built_${pkg}" 2>/dev/null | grep -q .; then
+              echo "✅ $pkg: 已编译"
+            else
+              echo "❌ $pkg: 未编译或编译失败"
+            fi
+          done
+          
+          exit 1
+        fi
         
         # 显示ccache统计
         echo "📊 CCache 统计:"
         ccache -s
         
-        echo "✅ 编译完成! 耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+        echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
+        
+        # 记录编译总时长（如果超过阈值）
+        if [ "$DURATION" -gt 3600 ]; then  # 超过1小时
+          echo "⏱️ 总编译耗时: ${DURATION}秒 ($(($DURATION/60))分钟) - 较长"
+        else
+          echo "✅ 编译完成! 耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
+        fi
 
-    - name: "📦 收集构建产物"
-      if: success()
+    - name: "💾 编译后最终空间检查"
+      run: |
+        echo "=== 编译后最终空间检查 ==="
+        echo "根分区 (/):"
+        df -h /
+        echo ""
+        echo "数据分区 (/mnt):"
+        df -h /mnt
+        
+        # 计算空间使用变化
+        echo ""
+        echo "📊 空间使用总结:"
+        du -sh ${{ env.SOURCE_DIR }}/bin/ 2>/dev/null || echo "无法获取输出目录大小"
+
+    - name: "📋 编译诊断报告"
+      if: always()
+      run: |
+        echo "=== 编译诊断报告 ==="
+        
+        # 检查日志文件
+        if ls /tmp/build-logs/*.log 2>/dev/null; then
+          echo "📁 可用日志文件:"
+          ls -la /tmp/build-logs/
+          
+          # 显示关键统计
+          for logfile in /tmp/build-logs/*.log; do
+            echo ""
+            echo "📊 $(basename $logfile) 统计:"
+            echo "  总行数: $(wc -l < "$logfile")"
+            echo "  错误数: $(grep -c "Error" "$logfile" || echo 0)"
+            echo "  警告数: $(grep -c "Warning" "$logfile" || echo 0)"
+            echo "  失败数: $(grep -c "Failed" "$logfile" || echo 0)"
+          done
+        else
+          echo "⚠️ 无编译日志文件"
+        fi
+        
+        # 显示耗时统计
+        echo ""
+        echo "⏱️ 关键步骤耗时统计:"
+        if [ -n "${{ env.feeds_duration }}" ] && [ "${{ env.feeds_duration }}" -gt 600 ]; then
+          echo "  Feeds更新: ${{ env.feeds_duration }}秒 (较长)"
+        fi
+        if [ -n "${{ env.toolchain_duration }}" ] && [ "${{ env.toolchain_duration }}" -gt 1200 ]; then
+          echo "  工具链编译: ${{ env.toolchain_duration }}秒 (较长)"
+        fi
+        if [ -n "${{ env.BUILD_DURATION }}" ] && [ "${{ env.BUILD_DURATION }}" -gt 3600 ]; then
+          echo "  总编译: ${{ env.BUILD_DURATION }}秒 ($((${{ env.BUILD_DURATION }}/60))分钟) (较长)"
+        fi
+
+    - name: "📦 收集构建产物和诊断信息"
+      if: success() || failure()
       run: |
         cd ${{ env.SOURCE_DIR }}
-        echo "收集编译产物..."
+        echo "收集编译产物和诊断信息..."
         
         mkdir -p ${{ env.ARTIFACTS_DIR }}
         
-        # 查找并复制固件文件
+        # 收集固件文件
         find bin/targets -type f \( -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" \) -exec cp --parents {} ${{ env.ARTIFACTS_DIR }}/ \; 2>/dev/null || true
+        
+        # 收集编译日志
+        cp -r /tmp/build-logs ${{ env.ARTIFACTS_DIR }}/ 2>/dev/null || true
+        
+        # 收集配置信息
+        cp .config ${{ env.ARTIFACTS_DIR }}/config 2>/dev/null || true
+        
+        # 收集关键构建状态
+        {
+          echo "=== 构建状态报告 ==="
+          echo "构建时间: $(date)"
+          echo "编译时长: ${{ env.BUILD_DURATION || 'N/A' }}秒"
+          echo "源码分支: ${{ env.ACTUAL_BRANCH }}"
+          echo "配置: ${{ github.event.inputs.config_profile }}"
+          echo "优化策略: ${{ github.event.inputs.build_optimization }}"
+          echo "工具链: ${{ steps.toolchain-setup.outputs.result }}"
+          echo "自定义功能: ${{ github.event.inputs.enable_custom_features }}"
+          echo ""
+          echo "=== 耗时统计 ==="
+          if [ -n "${{ env.feeds_duration }}" ]; then
+            echo "Feeds更新: ${{ env.feeds_duration }}秒"
+          fi
+          if [ -n "${{ env.toolchain_duration }}" ]; then
+            echo "工具链编译: ${{ env.toolchain_duration }}秒"
+          fi
+          if [ -n "${{ env.BUILD_DURATION }}" ]; then
+            echo "总编译: ${{ env.BUILD_DURATION }}秒"
+          fi
+          echo ""
+          echo "=== 文件列表 ==="
+          find bin/targets -type f 2>/dev/null | sort || echo "无法列出文件"
+        } > ${{ env.ARTIFACTS_DIR }}/build-report.txt
         
         # 复制到工作目录
         mkdir -p $GITHUB_WORKSPACE/artifacts
         cp -r ${{ env.ARTIFACTS_DIR }}/* $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
         
-        echo "✅ 产物收集完成"
+        echo "✅ 产物和诊断信息收集完成"
 
     - name: "🧹 安全清理环境"
       if: always()
@@ -390,17 +657,17 @@ jobs:
         echo "✅ 环境清理完成"
 
     - name: "💾 上传构建产物"
-      if: success()
+      if: success() || failure()
       uses: actions/upload-artifact@v4
       with:
         name: "Firmware-${{ github.run_number }}-${{ env.ACTUAL_BRANCH }}"
         path: artifacts
         retention-days: 30
 
-    - name: "📊 性能报告"
+    - name: "📊 智能编译报告"
       if: always()
       run: |
-        echo "=== 高性能编译报告 ==="
+        echo "=== 智能编译报告 ==="
         echo "状态: ${{ job.status }}"
         echo "源码: ${{ env.SOURCE_URL }}"
         echo "分支: ${{ env.ACTUAL_BRANCH }}"
@@ -412,8 +679,23 @@ jobs:
           echo "  - 使用 /mnt 分区 (66G 空间)"
           echo "  - 8GB 交换文件"
           echo "  - CCache 编译缓存"
-          echo "  - 多线程并行编译"
-          echo "  - 性能优化配置"
+          echo "  - 智能多线程编译"
+          echo "  - 分阶段错误诊断"
         else
           echo "❌ 构建失败"
+          echo "🔍 诊断信息已收集到Artifacts中"
+          echo "💡 查看 build-logs/ 目录获取详细错误信息"
+        fi
+        
+        # 显示耗时警告
+        echo ""
+        echo "⏱️ 耗时分析:"
+        if [ -n "${{ env.feeds_duration }}" ] && [ "${{ env.feeds_duration }}" -gt 600 ]; then
+          echo "  ⚠️ Feeds更新耗时较长: ${{ env.feeds_duration }}秒"
+        fi
+        if [ -n "${{ env.toolchain_duration }}" ] && [ "${{ env.toolchain_duration }}" -gt 1200 ]; then
+          echo "  ⚠️ 工具链编译耗时较长: ${{ env.toolchain_duration }}秒"
+        fi
+        if [ -n "${{ env.BUILD_DURATION }}" ] && [ "${{ env.BUILD_DURATION }}" -gt 3600 ]; then
+          echo "  ⚠️ 总编译耗时较长: ${{ env.BUILD_DURATION }}秒"
         fi
