@@ -43,7 +43,7 @@ on:
       enable_custom_features:
         description: '启用自定义功能 (自定义脚本和预编译IPK包)'
         required: false
-        default: false
+        default: true
         type: boolean
 
 env:
@@ -61,23 +61,21 @@ jobs:
     - name: "📥 检出仓库"
       uses: actions/checkout@v4
 
-    - name: "💾 系统资源分析"
+    - name: "💾 系统资源分析与清理"
       run: |
         echo "=== 系统资源分析 ==="
-        echo "📊 磁盘空间:"
         df -h
-        echo ""
-        echo "💻 CPU 信息:"
-        nproc
         echo "CPU 核心数: $(nproc)"
-        echo ""
-        echo "🧠 内存信息:"
         free -h
-        echo ""
-        echo "🚀 基于资源分析的性能优化建议:"
-        echo "  - 可用 CPU 核心: $(nproc)"
-        echo "  - /mnt 可用空间: $(df /mnt | awk 'NR==2 {print $4}')"
-        echo "  - 将使用优化编译策略"
+        
+        echo "🧹 清理可能存在的旧交换文件..."
+        # 安全地清理交换文件
+        sudo swapoff /mnt/swapfile 2>/dev/null || true
+        sudo swapoff /swapfile 2>/dev/null || true
+        sudo rm -f /mnt/swapfile 2>/dev/null || true
+        sudo rm -f /swapfile 2>/dev/null || true
+        
+        echo "✅ 环境清理完成"
 
     - name: "🔧 设置高性能工作环境"
       run: |
@@ -87,17 +85,16 @@ jobs:
         sudo chown -R runner:runner ${{ env.SOURCE_DIR }}
         sudo chown -R runner:runner ${{ env.ARTIFACTS_DIR }}
         
-        echo "🔄 创建大容量交换文件..."
-        sudo fallocate -l 8G /mnt/swapfile
+        echo "🔄 安全创建大容量交换文件..."
+        # 使用dd命令替代fallocate，避免"Text file busy"错误
+        sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=8192 status=progress
         sudo chmod 600 /mnt/swapfile
         sudo mkswap /mnt/swapfile
         sudo swapon /mnt/swapfile
         echo "✅ 8GB交换文件已启用"
         
         echo "⚡ 优化系统性能设置..."
-        # 提高文件描述符限制
         ulimit -n 65536
-        # 优化编译环境
         export FORCE_UNSAFE_CONFIGURE=1
 
     - name: "🔍 检查目录结构"
@@ -383,12 +380,14 @@ jobs:
         
         echo "✅ 产物收集完成"
 
-    - name: "🧹 清理环境"
+    - name: "🧹 安全清理环境"
       if: always()
       run: |
-        echo "清理编译环境..."
-        sudo rm -rf ${{ env.SOURCE_DIR }} ${{ env.ARTIFACTS_DIR }} /mnt/ccache /mnt/swapfile 2>/dev/null || true
+        echo "安全清理编译环境..."
+        # 先禁用交换文件再删除
         sudo swapoff /mnt/swapfile 2>/dev/null || true
+        sudo rm -rf ${{ env.SOURCE_DIR }} ${{ env.ARTIFACTS_DIR }} /mnt/ccache /mnt/swapfile 2>/dev/null || true
+        echo "✅ 环境清理完成"
 
     - name: "💾 上传构建产物"
       if: success()
