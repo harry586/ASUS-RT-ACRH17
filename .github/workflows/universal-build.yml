@@ -1,4 +1,4 @@
-name: "Universal Firmware Builder - Fixed Compile Targets"
+name: "Universal Firmware Builder - Debug Stage 3"
 
 on:
   workflow_dispatch:
@@ -562,7 +562,7 @@ jobs:
           echo "✅ 磁盘空间充足，可以开始编译"
         fi
 
-    - name: "🏗️ 智能编译固件 - 通用编译目标"
+    - name: "🏗️ 智能编译固件 - 调试阶段3"
       timeout-minutes: 240
       id: compile-firmware
       run: |
@@ -633,8 +633,8 @@ jobs:
               echo "=== 阶段2后磁盘空间 ==="
               df -h /mnt
               
-              echo "🔧 阶段3: 最终组装"
-              make target/install -j$((CPU_CORES - 1))
+              echo "🔧 阶段3: 最终组装 (详细输出+单线程用于调试)"
+              make target/install -j1 V=s
               
               COMPILE_SUCCESS=true
               BUILD_EXIT_CODE=0
@@ -670,10 +670,10 @@ jobs:
               echo "=== 阶段2后磁盘空间 ==="
               df -h /mnt
               
-              # 阶段3: 最终组装
-              echo "🔧 阶段3: 最终组装"
+              # 阶段3: 最终组装 - 使用详细输出和单线程进行调试
+              echo "🔧 阶段3: 最终组装 (详细输出+单线程用于调试)"
               PHASE3_START=$(date +%s)
-              make target/install -j$CPU_CORES
+              make target/install -j1 V=s
               PHASE3_END=$(date +%s)
               PHASE3_DURATION=$((PHASE3_END - PHASE3_START))
               echo "阶段3完成，耗时: ${PHASE3_DURATION}秒"
@@ -854,5 +854,5 @@ jobs:
         else
           echo "❌ 构建失败"
           echo "🔍 请查看 Artifacts 中的详细日志和诊断信息"
-          echo "📁 特别关注 build-logs/ 目录中的阶段2编译日志"
+          echo "📁 特别关注 build-logs/ 目录中的阶段3编译日志"
         fi
