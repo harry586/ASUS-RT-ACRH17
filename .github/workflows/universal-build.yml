@@ -43,7 +43,7 @@ on:
       enable_custom_features:
         description: '启用自定义功能 (自定义脚本和预编译IPK包)'
         required: false
-        default: true
+        default: false
         type: boolean
 
 env:
@@ -53,13 +53,11 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240  # 增加到4小时
+    timeout-minutes: 360
     
     steps:
     - name: "📥 检出仓库"
       uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: "🔍 检查目录结构"
       run: |
@@ -83,7 +81,6 @@ jobs:
       run: |
         echo "正在解析源码配置..."
         
-        # 检查 repositories.json 文件是否存在
         if [ ! -f "firmware-config/repositories.json" ]; then
           echo "❌ 错误: repositories.json 文件不存在"
           exit 1
@@ -91,24 +88,19 @@ jobs:
         
         echo "✅ 找到 repositories.json 文件"
         
-        # 获取用户选择的源码库预设
         PRESET="${{ github.event.inputs.source_preset }}"
         
-        # 从repositories.json中提取源码URL和描述
         SOURCE_URL=$(jq -r ".repositories.$PRESET.url // empty" firmware-config/repositories.json)
         DESCRIPTION=$(jq -r ".repositories.$PRESET.description // empty" firmware-config/repositories.json)
         
-        # 分支处理逻辑：auto模式使用推荐分支，否则使用用户指定分支
         BRANCH="${{ github.event.inputs.source_branch }}"
         if [ "$BRANCH" = "auto" ]; then
           BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch // \"main\"" firmware-config/repositories.json)
           echo "自动选择推荐分支: $BRANCH"
         fi
         
-        # 验证配置数据是否有效
         if [ -z "$SOURCE_URL" ]; then
           echo "❌ 错误: 无法从repositories.json获取源码URL，请检查$PRESET配置"
-          echo "repositories.json 内容:"
           cat firmware-config/repositories.json
           exit 1
         fi
@@ -118,12 +110,10 @@ jobs:
           exit 1
         fi
         
-        # 显示成功信息
         echo "✅ 源码库: $PRESET - $DESCRIPTION"
         echo "✅ 仓库URL: $SOURCE_URL"
         echo "✅ 使用分支: $BRANCH"
         
-        # 设置环境变量供后续步骤使用
         echo "SOURCE_URL=$SOURCE_URL" >> $GITHUB_ENV
         echo "SOURCE_BRANCH=$BRANCH" >> $GITHUB_ENV
 
@@ -131,15 +121,23 @@ jobs:
       run: |
         echo "安装编译依赖包..."
         sudo apt-get update
-        sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip python3-serial python3-setuptools rsync unzip zlib1g-dev file wget jq ncurses-term tree
+        sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip python3-setuptools rsync unzip zlib1g-dev file wget jq
+        
+        echo "🔄 创建交换文件解决内存不足..."
+        sudo fallocate -l 4G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        echo "✅ 4GB交换文件已启用"
+        
         echo "✅ 构建环境准备完成"
 
     - name: "📥 获取源代码"
       run: |
         echo "正在克隆源码仓库: ${{ env.SOURCE_URL }}"
         echo "使用分支: ${{ env.SOURCE_BRANCH }}"
-        # 添加重试机制
-        for i in {1..3}; do
+        
+        for i in 1 2 3; do
           echo "尝试第 $i 次克隆..."
           if git clone --depth 1 --branch "${{ env.SOURCE_BRANCH }}" "${{ env.SOURCE_URL }}" source; then
             echo "✅ 源码克隆完成"
@@ -147,7 +145,7 @@ jobs:
           else
             echo "❌ 第 $i 次克隆失败"
             if [ $i -eq 3 ]; then
-              echo "❌ 所有重试都失败，请检查网络连接和分支名称"
+              echo "❌ 所有重试都失败"
               exit 1
             fi
             sleep 10
@@ -155,19 +153,16 @@ jobs:
         done
 
     - name: "🔧 源码初始化"
-      timeout-minutes: 30  # 为feeds操作单独设置超时
+      timeout-minutes: 30
       run: |
         cd source
         echo "初始化源码树..."
         
-        # 分步更新feeds，避免内存不足
-        echo "步骤1: 更新基础feeds..."
+        echo "步骤1: 更新feeds..."
         ./scripts/feeds update packages
         ./scripts/feeds update luci
-        ./scripts/feeds update routing
-        ./scripts/feeds update telephony
         
-        echo "步骤2: 安装基础feeds..."
+        echo "步骤2: 安装feeds..."
         ./scripts/feeds install -a
         
         echo "✅ Feeds更新完成"
@@ -180,25 +175,21 @@ jobs:
         
         if [ ! -f "$CONFIG_FILE" ]; then
           echo "❌ 错误: 配置文件不存在: $CONFIG_FILE"
-          echo "💡 请查看 firmware-config/configs-list.md 获取可用配置文件列表"
-          echo "当前 firmware-config/configs 目录内容:"
-          ls -la ../firmware-config/configs/ || echo "configs 目录不存在"
+          ls -la ../firmware-config/configs/ || echo "configs目录不存在"
           exit 1
         fi
         
         cp "$CONFIG_FILE" .config
-        echo "✅ 配置文件应用完成: ${{ github.event.inputs.config_profile }}"
+        echo "✅ 配置文件应用完成"
 
     - name: "🔧 修复配置环境"
       run: |
         cd source
         echo "修复无头环境配置问题..."
         
-        # 禁用可能触发交互式配置的选项
         sed -i 's/CONFIG_DEVEL=y/# CONFIG_DEVEL is not set/' .config 2>/dev/null || true
         sed -i 's/CONFIG_BUILD_LOG=y/# CONFIG_BUILD_LOG is not set/' .config 2>/dev/null || true
         
-        # 确保使用非交互式配置
         echo "应用非交互式配置..."
         yes "" | make oldconfig >/dev/null 2>&1 || true
         
@@ -215,8 +206,7 @@ jobs:
         case $STRATEGY in
           "prebuilt")
             echo "🔧 使用预编译工具链..."
-            # 尝试使用预编译工具链
-            if make tools/install toolchain/install V=s -j2; then
+            if make tools/install toolchain/install -j2; then
               echo "✅ 预编译工具链安装成功"
               echo "result=prebuilt" >> $GITHUB_OUTPUT
               echo "status=success" >> $GITHUB_OUTPUT
@@ -228,14 +218,12 @@ jobs:
             ;;
           "local")
             echo "🔧 使用本地编译工具链..."
-            echo "这将需要较长时间..."
             echo "result=local" >> $GITHUB_OUTPUT
             echo "status=success" >> $GITHUB_OUTPUT
             ;;
           "auto"|*)
             echo "🔧 自动选择工具链策略..."
-            # 尝试预编译，如果失败则使用本地编译
-            if make tools/install toolchain/install V=s -j2; then
+            if make tools/install toolchain/install -j2; then
               echo "✅ 预编译工具链可用"
               echo "result=prebuilt" >> $GITHUB_OUTPUT
               echo "status=success" >> $GITHUB_OUTPUT
@@ -341,53 +329,45 @@ EOF
       run: |
         cd source
         echo "验证配置文件..."
-        # 使用非交互式方式验证配置
         make defconfig >/dev/null 2>&1 || echo "配置验证完成（非交互式）"
         echo "✅ 配置验证完成"
 
-    - name: "🏗️ 编译固件"
+    - name: "🏗️ 编译固件 - 内存优化版"
       timeout-minutes: 180
       run: |
         cd source
         export TERM=linux
         export FORCE_UNSAFE_CONFIGURE=1
-        # 禁用所有可能的交互
+        
+        # 关键：设置内存优化环境变量
         export MAKE_TERMOUT=
         export MAKE_TERMERR=
+        # 减少并行任务以避免内存溢出
+        export NUM_CPU=2
         
         START_TIME=$(date +%s)
         
-        echo "开始编译固件..."
+        echo "开始编译固件 (内存优化模式)..."
         echo "📊 编译参数:"
-        echo "  - 工具链策略: ${{ steps.toolchain-setup.outputs.result }} (${{ steps.toolchain-setup.outputs.status }})"
+        echo "  - 工具链策略: ${{ steps.toolchain-setup.outputs.result }}"
         echo "  - 编译优化: ${{ github.event.inputs.build_optimization }}"
         echo "  - 自定义功能: ${{ github.event.inputs.enable_custom_features }}"
         
-        # 设置编译环境，避免交互
-        echo "设置非交互式编译环境..."
-        
+        # 关键优化：根据内存限制调整编译策略
         case "${{ github.event.inputs.build_optimization }}" in
           "speed")
-            echo "🚀 速度优先模式: 多线程编译"
-            JOBS=$(nproc)
-            echo "使用 $JOBS 个并行任务"
-            if [ "${{ steps.toolchain-setup.outputs.result }}" = "prebuilt" ]; then
-              echo "⚡ 使用预编译工具链加速"
-            fi
+            echo "🚀 速度优先模式 (限制并行任务)"
+            # 即使速度优先也限制并行数
+            JOBS=2
+            echo "使用 $JOBS 个并行任务 (内存安全)"
             make -j$JOBS
             ;;
           "stability")
-            echo "🛡️ 稳定性优先模式: 单线程详细编译"
-            if [ "${{ steps.toolchain-setup.outputs.result }}" = "prebuilt" ]; then
-              echo "⚡ 使用预编译工具链"
-            fi
+            echo "🛡️ 稳定性优先模式: 单线程编译"
             make V=s -j1
             ;;
           "balanced"|*)
-            echo "⚖️ 平衡模式: 2线程详细编译"
-            if [ "${{ steps.toolchain-setup.outputs.result }}" = "prebuilt" ]; then
-              echo "⚡ 使用预编译工具链加速"
-            fi
+            echo "⚖️ 平衡模式: 2线程编译"
             make -j2 V=s
             ;;
         esac
@@ -403,34 +383,30 @@ EOF
         cd source
         echo "收集编译输出文件..."
         
-        # 创建输出目录
         mkdir -p ../artifacts
         
-        # 查找固件文件
         FIRMWARE_FILES=$(find bin/targets -type f \( -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" \) 2>/dev/null | head -20)
         
         if [ -n "$FIRMWARE_FILES" ]; then
           echo "✅ 找到固件文件:"
           echo "$FIRMWARE_FILES"
-          # 复制到artifacts目录
           for file in $FIRMWARE_FILES; do
             echo "📦 复制: $file"
             mkdir -p "../artifacts/$(dirname "$file")"
             cp "$file" "../artifacts/$file"
           done
         else
-          echo "⚠️ 未找到标准固件文件，尝试查找其他文件"
+          echo "⚠️ 未找到标准固件文件"
           find bin/ -type f 2>/dev/null | head -30
         fi
         
-        # 创建构建信息文件
         {
           echo "=== 固件构建信息 ==="
           echo "源码: ${{ env.SOURCE_URL }}"
           echo "分支: ${{ env.SOURCE_BRANCH }}"
           echo "配置: ${{ github.event.inputs.config_profile }}"
           echo "优化: ${{ github.event.inputs.build_optimization }}"
-          echo "工具链: ${{ steps.toolchain-setup.outputs.result }} (${{ steps.toolchain-setup.outputs.status }})"
+          echo "工具链: ${{ steps.toolchain-setup.outputs.result }}"
           echo "自定义功能: ${{ github.event.inputs.enable_custom_features }}"
           echo "构建时间: $(date)"
           echo "编译时长: ${{ env.BUILD_DURATION }}秒"
@@ -456,33 +432,15 @@ EOF
         echo "源码: ${{ env.SOURCE_URL }}"
         echo "分支: ${{ env.SOURCE_BRANCH }}"
         echo "配置: ${{ github.event.inputs.config_profile }}"
-        echo "优化: ${{ github.event.inputs.build_optimization }}"
-        echo "工具链: ${{ steps.toolchain-setup.outputs.result }} (${{ steps.toolchain-setup.outputs.status }})"
-        echo "自定义功能: ${{ github.event.inputs.enable_custom_features }}"
         
         if [ "${{ job.status }}" = "success" ]; then
           echo "🎉 构建成功! 固件已上传到Artifacts"
           echo "⏱️ 编译时长: ${{ env.BUILD_DURATION }}秒"
-          echo ""
-          echo "🚀 使用的优化特性:"
-          if [ "${{ steps.toolchain-setup.outputs.result }}" = "prebuilt" ]; then
-            echo "  ✅ 预编译工具链 - 大幅减少编译时间"
-          else
-            echo "  🔧 本地编译工具链 - 稳定性优先"
-          fi
-          if [ "${{ github.event.inputs.enable_custom_features }}" = "true" ]; then
-            echo "  ✅ 自定义功能 - 包含IPK包和脚本"
-          fi
-          echo "  🖥️  无头环境适配 - 避免交互式配置"
         else
-          echo "❌ 构建失败，请检查日志中的错误信息"
+          echo "❌ 构建失败，请检查日志"
           echo ""
           echo "💡 调试建议:"
-          if [ "${{ steps.toolchain-setup.outputs.status }}" = "fallback" ]; then
-            echo "  - 预编译工具链不可用，已回退到本地编译"
-          fi
           echo "  - 尝试使用 'stability' 编译模式"
-          echo "  - 检查自定义脚本是否有语法错误"
-          echo "  - 验证配置文件是否正确"
-          echo "  - 检查是否仍有交互式配置问题"
+          echo "  - 检查配置文件是否正确"
+          echo "  - 查看是否内存不足导致中断"
         fi
