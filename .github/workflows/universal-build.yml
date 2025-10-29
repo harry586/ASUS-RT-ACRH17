@@ -1,4 +1,4 @@
-name: "Universal Firmware Builder - Fixed Toolchain Compilation"
+name: "Universal Firmware Builder - Force Toolchain Rebuild"
 
 on:
   workflow_dispatch:
@@ -163,7 +163,7 @@ jobs:
         sudo apt-get install -y flex bison byacc
         
         # 其他可能需要的依赖
-        sudo apt-get install -y subversion mercurial curl cmake ninja-build libelf-dev libssl-dev zlib1g-dev
+        sudo apt-get install -y subversion mercurial curl cmake ninja-build libelf-dev libssl-dev zlib1g-dev libc6-dev
         
         # 检查关键工具版本
         echo "=== 关键工具版本检查 ==="
@@ -330,7 +330,7 @@ jobs:
         
         echo "✅ 性能优化配置完成"
 
-    - name: "🛠️ 修复工具链编译问题"
+    - name: "🛠️ 强制重新编译工具链"
       timeout-minutes: 120
       id: toolchain-setup
       run: |
@@ -338,8 +338,8 @@ jobs:
         
         START_TIME=$(date +%s)
         
-        STRATEGY="${{ github.event.inputs.toolchain_strategy }}"
-        echo "工具链策略: $STRATEGY"
+        echo "🧹 清理可能存在的旧工具链..."
+        rm -rf staging_dir/toolchain-* build_dir/toolchain-*
         
         # 创建工具链编译日志目录
         TOOLCHAIN_LOGS_DIR="/home/runner/toolchain-logs"
@@ -370,38 +370,29 @@ jobs:
           exit 1
         fi
         
-        # 工具链编译策略
-        case $STRATEGY in
-          "prebuilt")
-            echo "🔧 使用预编译工具链..."
-            if make toolchain/install -j$(nproc) V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/toolchain-install.log; then
-              echo "✅ 预编译工具链安装成功"
-              echo "result=prebuilt" >> $GITHUB_OUTPUT
-            else
-              echo "❌ 预编译工具链安装失败，回退到本地编译"
-              echo "result=local" >> $GITHUB_OUTPUT
-            fi
-            ;;
-          "local"|*)
-            echo "🔧 使用本地编译工具链..."
-            echo "result=local" >> $GITHUB_OUTPUT
-            ;;
-        esac
+        # 强制使用本地编译工具链策略
+        echo "🔧 强制使用本地编译工具链策略..."
+        echo "result=local" >> $GITHUB_OUTPUT
         
-        # 如果是本地编译或回退到本地编译，编译工具链
-        if [ "${{ steps.toolchain-setup.outputs.result }}" = "local" ]; then
-          echo "🔧 编译本地工具链 (详细输出)..."
-          if ! make toolchain/compile -j$(($(nproc) - 1)) V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/toolchain-compile.log; then
-            echo "❌ 工具链编译失败，尝试单线程编译..."
-            if ! make toolchain/compile -j1 V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/toolchain-compile-single.log; then
-              echo "❌ 工具链单线程编译也失败"
-              echo "=== 错误分析 ==="
-              tail -50 $TOOLCHAIN_LOGS_DIR/toolchain-compile-single.log | grep -i "error\|failed" | tail -20
-              exit 1
-            fi
+        echo "🔧 编译本地工具链 (详细输出)..."
+        if ! make toolchain/compile -j$(($(nproc) - 1)) V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/toolchain-compile.log; then
+          echo "❌ 工具链编译失败，尝试单线程编译..."
+          if ! make toolchain/compile -j1 V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/toolchain-compile-single.log; then
+            echo "❌ 工具链单线程编译也失败"
+            echo "=== 错误分析 ==="
+            tail -50 $TOOLCHAIN_LOGS_DIR/toolchain-compile-single.log | grep -i "error\|failed" | tail -20
+            
+            # 检查是否有磁盘空间问题
+            echo "=== 磁盘空间检查 ==="
+            df -h
+            echo "=== 内存和交换空间 ==="
+            free -h
+            
+            exit 1
           fi
-          echo "✅ 本地工具链编译完成"
         fi
+        
+        echo "✅ 本地工具链编译完成"
         
         END_TIME=$(date +%s)
         DURATION=$((END_TIME - START_TIME))
@@ -462,10 +453,10 @@ jobs:
             echo "检查目录: $dir"
             if [ -d "$dir" ]; then
               echo "目录内容:"
-              ls -la "$dir" | head -20
+              ls -la "$dir"
               if [ -d "$dir/bin" ]; then
                 echo "bin 目录内容:"
-                ls -la "$dir/bin/" | head -20
+                ls -la "$dir/bin/"
               else
                 echo "⚠️ 没有 bin 目录"
               fi
@@ -476,7 +467,7 @@ jobs:
           TOOLCHAIN_LOGS_DIR="/home/runner/toolchain-logs"
           if [ -f "$TOOLCHAIN_LOGS_DIR/toolchain-compile.log" ]; then
             echo "=== 工具链编译错误 ==="
-            grep -i "error\|failed" "$TOOLCHAIN_LOGS_DIR/toolchain-compile.log" | tail -20
+            tail -100 "$TOOLCHAIN_LOGS_DIR/toolchain-compile.log" | grep -i "error\|failed" | tail -20
           fi
           
           exit 1
