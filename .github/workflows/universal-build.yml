@@ -1,4 +1,4 @@
-name: "Universal Firmware Builder - Debug Stage 2"
+name: "Universal Firmware Builder - Fixed Compile Targets"
 
 on:
   workflow_dispatch:
@@ -562,7 +562,7 @@ jobs:
           echo "✅ 磁盘空间充足，可以开始编译"
         fi
 
-    - name: "🏗️ 智能编译固件 - 调试阶段2"
+    - name: "🏗️ 智能编译固件 - 通用编译目标"
       timeout-minutes: 240
       id: compile-firmware
       run: |
@@ -603,7 +603,7 @@ jobs:
             echo "🚀 极速模式: 使用 $CPU_CORES 线程单阶段编译"
             {
               echo "📦 单阶段快速编译"
-              if make -j$CPU_CORES CC="ccache gcc" CXX="ccache g++"; then
+              if make -j$CPU_CORES; then
                 echo "✅ 编译命令执行完成"
                 COMPILE_SUCCESS=true
                 BUILD_EXIT_CODE=0
@@ -620,21 +620,21 @@ jobs:
               set -e  # 严格错误处理，任何命令失败立即退出
               
               echo "🔧 阶段1: 编译内核和基础包 (详细输出)"
-              make target/linux/compile package/kernel/linux/compile -j$((CPU_CORES - 1)) V=s CC="ccache gcc" CXX="ccache g++"
+              make target/linux/compile -j$((CPU_CORES - 1)) V=s
               
               # 阶段1后空间检查
               echo "=== 阶段1后磁盘空间 ==="
               df -h /mnt
               
-              echo "📦 阶段2: 编译网络和系统包 (详细输出用于调试)"
-              make package/network/compile package/system/compile -j1 V=s CC="ccache gcc" CXX="ccache g++"
+              echo "📦 阶段2: 编译所有包 (详细输出用于调试)"
+              make package/compile -j1 V=s
               
               # 阶段2后空间检查
               echo "=== 阶段2后磁盘空间 ==="
               df -h /mnt
               
               echo "🔧 阶段3: 最终组装"
-              make target/install -j$((CPU_CORES - 1)) CC="ccache gcc" CXX="ccache g++"
+              make target/install -j$((CPU_CORES - 1))
               
               COMPILE_SUCCESS=true
               BUILD_EXIT_CODE=0
@@ -649,7 +649,7 @@ jobs:
               # 阶段1: 内核和关键驱动 - 详细输出便于诊断
               echo "🔧 阶段1: 编译内核和关键驱动 (详细输出)"
               PHASE1_START=$(date +%s)
-              make target/linux/compile package/kernel/linux/compile -j$CPU_CORES V=s CC="ccache gcc" CXX="ccache g++"
+              make target/linux/compile -j$CPU_CORES V=s
               PHASE1_END=$(date +%s)
               PHASE1_DURATION=$((PHASE1_END - PHASE1_START))
               echo "阶段1完成，耗时: ${PHASE1_DURATION}秒"
@@ -658,10 +658,10 @@ jobs:
               echo "=== 阶段1后磁盘空间 ==="
               df -h /mnt
               
-              # 阶段2: 网络和系统包 - 使用详细输出和单线程进行调试
-              echo "📦 阶段2: 编译网络和系统包 (详细输出+单线程用于调试)"
+              # 阶段2: 所有包 - 使用详细输出和单线程进行调试
+              echo "📦 阶段2: 编译所有包 (详细输出+单线程用于调试)"
               PHASE2_START=$(date +%s)
-              make package/network/compile package/system/compile -j1 V=s CC="ccache gcc" CXX="ccache g++"
+              make package/compile -j1 V=s
               PHASE2_END=$(date +%s)
               PHASE2_DURATION=$((PHASE2_END - PHASE2_START))
               echo "阶段2完成，耗时: ${PHASE2_DURATION}秒"
@@ -670,10 +670,10 @@ jobs:
               echo "=== 阶段2后磁盘空间 ==="
               df -h /mnt
               
-              # 阶段3: 剩余包和最终组装
-              echo "🔧 阶段3: 编译剩余包并最终组装"
+              # 阶段3: 最终组装
+              echo "🔧 阶段3: 最终组装"
               PHASE3_START=$(date +%s)
-              make package/compile target/install -j$CPU_CORES CC="ccache gcc" CXX="ccache g++"
+              make target/install -j$CPU_CORES
               PHASE3_END=$(date +%s)
               PHASE3_DURATION=$((PHASE3_END - PHASE3_START))
               echo "阶段3完成，耗时: ${PHASE3_DURATION}秒"
