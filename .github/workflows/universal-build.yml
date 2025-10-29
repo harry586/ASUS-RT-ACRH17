@@ -59,6 +59,30 @@ jobs:
     - name: "📥 检出仓库"
       uses: actions/checkout@v4
 
+    - name: "💾 检查磁盘空间 (构建前)"
+      run: |
+        echo "=== 构建前磁盘空间检查 ==="
+        df -h
+        echo "=== 最大目录占用 ==="
+        sudo du -sh /home/runner/* 2>/dev/null | sort -hr | head -10
+        sudo du -sh /home/runner/actions-runner/cached/* 2>/dev/null | sort -hr | head -10 || true
+        echo "=== 可用内存 ==="
+        free -h
+
+    - name: "🧹 清理系统缓存"
+      run: |
+        echo "清理系统缓存以释放空间..."
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
+        sudo rm -rf /usr/local/lib/android/sdk/ndk-bundle 2>/dev/null || true
+        sudo rm -rf /usr/share/dotnet/sdk/NuGetFallbackFolder 2>/dev/null || true
+        
+        # 清理旧的日志文件
+        echo "清理旧的日志文件..."
+        sudo find /home/runner/actions-runner/cached/_diag/ -name "*.log" -mtime +1 -delete 2>/dev/null || true
+        
+        echo "✅ 系统缓存清理完成"
+
     - name: "🔍 检查目录结构"
       run: |
         echo "=== 当前目录结构 ==="
@@ -196,6 +220,13 @@ jobs:
         
         echo "ACTUAL_BRANCH=$ACTUAL_BRANCH" >> $GITHUB_ENV
         echo "✅ 源码克隆完成，实际使用分支: $ACTUAL_BRANCH"
+
+    - name: "💾 检查磁盘空间 (克隆后)"
+      run: |
+        echo "=== 源码克隆后磁盘空间 ==="
+        df -h
+        echo "=== 源码目录大小 ==="
+        du -sh source/ || echo "无法获取源码目录大小"
 
     - name: "🔧 源码初始化"
       timeout-minutes: 30
@@ -375,6 +406,13 @@ jobs:
         make defconfig >/dev/null 2>&1 || echo "配置验证完成（非交互式）"
         echo "✅ 配置验证完成"
 
+    - name: "💾 检查磁盘空间 (编译前)"
+      run: |
+        echo "=== 编译前磁盘空间检查 ==="
+        df -h
+        echo "=== 编译目录大小 ==="
+        du -sh source/ || echo "无法获取编译目录大小"
+
     - name: "🏗️ 编译固件 - 内存优化版"
       timeout-minutes: 180
       run: |
@@ -421,6 +459,13 @@ jobs:
         echo "✅ 编译完成! 耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
         echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
 
+    - name: "💾 检查磁盘空间 (编译后)"
+      run: |
+        echo "=== 编译后磁盘空间 ==="
+        df -h
+        echo "=== 编译输出目录大小 ==="
+        du -sh source/bin/ 2>/dev/null || echo "无法获取输出目录大小"
+
     - name: "📦 收集构建产物"
       if: success()
       run: |
@@ -461,6 +506,32 @@ jobs:
           find bin/targets -type f 2>/dev/null | sort || echo "无法列出文件"
         } > ../artifacts/build-info.txt
 
+    - name: "🧹 编译后清理"
+      if: always()
+      run: |
+        echo "=== 编译后清理 ==="
+        
+        # 清理源码目录中的临时文件（保留bin目录）
+        if [ -d "source" ]; then
+          cd source
+          echo "清理源码临时文件..."
+          # 保留bin目录，清理其他编译中间文件
+          find . -name "tmp" -type d -exec rm -rf {} + 2>/dev/null || true
+          find . -name "staging_dir" -type d -exec rm -rf {} + 2>/dev/null || true
+          find . -name "build_dir" -type d -exec rm -rf {} + 2>/dev/null || true
+          cd ..
+        fi
+        
+        # 清理系统缓存
+        echo "清理系统缓存..."
+        sudo apt-get clean
+        npm cache clean --force 2>/dev/null || true
+        rm -rf ~/.cache/* 2>/dev/null || true
+        rm -rf ~/.npm 2>/dev/null || true
+        
+        echo "=== 最终磁盘空间 ==="
+        df -h
+
     - name: "💾 上传构建产物"
       if: success()
       uses: actions/upload-artifact@v4
@@ -483,6 +554,7 @@ jobs:
           echo "🎉 构建成功! 固件已上传到Artifacts"
           echo "⏱️ 编译时长: ${{ env.BUILD_DURATION }}秒"
           echo "🌿 实际使用分支: ${{ env.ACTUAL_BRANCH }}"
+          echo "💾 磁盘空间管理: 已启用自动清理"
         else
           echo "❌ 构建失败，请检查日志"
           echo ""
@@ -491,4 +563,5 @@ jobs:
           echo "  - 检查配置文件是否正确"
           echo "  - 查看是否内存不足导致中断"
           echo "  - 检查分支名称是否正确 (main/master)"
+          echo "  - 检查磁盘空间是否充足"
         fi
