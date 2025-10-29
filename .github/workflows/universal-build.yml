@@ -132,25 +132,70 @@ jobs:
         
         echo "✅ 构建环境准备完成"
 
-    - name: "📥 获取源代码"
+    - name: "📥 获取源代码 - 智能分支处理"
+      id: clone-source
       run: |
         echo "正在克隆源码仓库: ${{ env.SOURCE_URL }}"
-        echo "使用分支: ${{ env.SOURCE_BRANCH }}"
+        echo "首选分支: ${{ env.SOURCE_BRANCH }}"
         
-        for i in 1 2 3; do
-          echo "尝试第 $i 次克隆..."
-          if git clone --depth 1 --branch "${{ env.SOURCE_BRANCH }}" "${{ env.SOURCE_URL }}" source; then
-            echo "✅ 源码克隆完成"
-            break
+        # 智能分支处理：尝试首选分支，如果失败则尝试备选分支
+        CLONE_SUCCESS=false
+        
+        # 尝试首选分支
+        echo "🔍 尝试使用首选分支: ${{ env.SOURCE_BRANCH }}"
+        if git clone --depth 1 --branch "${{ env.SOURCE_BRANCH }}" "${{ env.SOURCE_URL }}" source 2>/dev/null; then
+          echo "✅ 使用首选分支克隆成功: ${{ env.SOURCE_BRANCH }}"
+          CLONE_SUCCESS=true
+          ACTUAL_BRANCH="${{ env.SOURCE_BRANCH }}"
+        else
+          echo "⚠️ 首选分支 '${{ env.SOURCE_BRANCH }}' 不存在，尝试备选分支..."
+          
+          # 根据首选分支决定备选分支
+          if [ "${{ env.SOURCE_BRANCH }}" = "main" ]; then
+            ALTERNATIVE_BRANCH="master"
+          elif [ "${{ env.SOURCE_BRANCH }}" = "master" ]; then
+            ALTERNATIVE_BRANCH="main"
           else
-            echo "❌ 第 $i 次克隆失败"
-            if [ $i -eq 3 ]; then
-              echo "❌ 所有重试都失败"
-              exit 1
-            fi
-            sleep 10
+            # 对于其他分支，尝试main和master
+            ALTERNATIVE_BRANCH="main"
           fi
-        done
+          
+          echo "🔍 尝试备选分支: $ALTERNATIVE_BRANCH"
+          if git clone --depth 1 --branch "$ALTERNATIVE_BRANCH" "${{ env.SOURCE_URL }}" source 2>/dev/null; then
+            echo "✅ 使用备选分支克隆成功: $ALTERNATIVE_BRANCH"
+            CLONE_SUCCESS=true
+            ACTUAL_BRANCH="$ALTERNATIVE_BRANCH"
+          else
+            # 如果还失败，尝试探测可用分支
+            echo "🔍 探测可用分支..."
+            git clone --depth 1 "${{ env.SOURCE_URL }}" source-temp 2>/dev/null
+            cd source-temp
+            AVAILABLE_BRANCHES=$(git branch -r | grep -v '\->' | sed 's/origin\///' | head -5)
+            cd ..
+            rm -rf source-temp
+            
+            echo "可用分支: $AVAILABLE_BRANCHES"
+            
+            # 尝试第一个可用分支
+            FIRST_BRANCH=$(echo "$AVAILABLE_BRANCHES" | head -1 | tr -d ' ')
+            if [ -n "$FIRST_BRANCH" ]; then
+              echo "🔍 尝试可用分支: $FIRST_BRANCH"
+              if git clone --depth 1 --branch "$FIRST_BRANCH" "${{ env.SOURCE_URL }}" source 2>/dev/null; then
+                echo "✅ 使用可用分支克隆成功: $FIRST_BRANCH"
+                CLONE_SUCCESS=true
+                ACTUAL_BRANCH="$FIRST_BRANCH"
+              fi
+            fi
+          fi
+        fi
+        
+        if [ "$CLONE_SUCCESS" = "false" ]; then
+          echo "❌ 所有分支尝试都失败，请检查仓库URL和分支名称"
+          exit 1
+        fi
+        
+        echo "ACTUAL_BRANCH=$ACTUAL_BRANCH" >> $GITHUB_ENV
+        echo "✅ 源码克隆完成，实际使用分支: $ACTUAL_BRANCH"
 
     - name: "🔧 源码初始化"
       timeout-minutes: 30
@@ -265,20 +310,18 @@ jobs:
         done
         
         mkdir -p package/base-files/files/etc/init.d
-        cat > package/base-files/files/etc/init.d/custom-ipk-install << 'EOF'
-#!/bin/sh /etc/rc.common
-START=99
-start() {
-    echo "正在安装自定义IPK包..."
-    for ipk in /usr/lib/opkg/custom/*.ipk; do
-        if [ -f "$ipk" ]; then
-            echo "安装: $(basename $ipk)"
-            opkg install "$ipk"
-        fi
-    done
-    echo "自定义IPK包安装完成"
-}
-EOF
+        echo '#!/bin/sh /etc/rc.common' > package/base-files/files/etc/init.d/custom-ipk-install
+        echo 'START=99' >> package/base-files/files/etc/init.d/custom-ipk-install
+        echo 'start() {' >> package/base-files/files/etc/init.d/custom-ipk-install
+        echo '    echo "正在安装自定义IPK包..."' >> package/base-files/files/etc/init.d/custom-ipk-install
+        echo '    for ipk in /usr/lib/opkg/custom/*.ipk; do' >> package/base-files/files/etc/init.d/custom-ipk-install
+        echo '        if [ -f "$ipk" ]; then' >> package/base-files/files/etc/init.d/custom-ipk-install
+        echo '            echo "安装: $(basename $ipk)"' >> package/base-files/files/etc/init.d/custom-ipk-install
+        echo '            opkg install "$ipk"' >> package/base-files/files/etc/init.d/custom-ipk-install
+        echo '        fi' >> package/base-files/files/etc/init.d/custom-ipk-install
+        echo '    done' >> package/base-files/files/etc/init.d/custom-ipk-install
+        echo '    echo "自定义IPK包安装完成"' >> package/base-files/files/etc/init.d/custom-ipk-install
+        echo '}' >> package/base-files/files/etc/init.d/custom-ipk-install
         
         chmod +x package/base-files/files/etc/init.d/custom-ipk-install
         
@@ -352,6 +395,7 @@ EOF
         echo "  - 工具链策略: ${{ steps.toolchain-setup.outputs.result }}"
         echo "  - 编译优化: ${{ github.event.inputs.build_optimization }}"
         echo "  - 自定义功能: ${{ github.event.inputs.enable_custom_features }}"
+        echo "  - 实际分支: ${{ env.ACTUAL_BRANCH }}"
         
         # 关键优化：根据内存限制调整编译策略
         case "${{ github.event.inputs.build_optimization }}" in
@@ -403,7 +447,8 @@ EOF
         {
           echo "=== 固件构建信息 ==="
           echo "源码: ${{ env.SOURCE_URL }}"
-          echo "分支: ${{ env.SOURCE_BRANCH }}"
+          echo "请求分支: ${{ env.SOURCE_BRANCH }}"
+          echo "实际分支: ${{ env.ACTUAL_BRANCH }}"
           echo "配置: ${{ github.event.inputs.config_profile }}"
           echo "优化: ${{ github.event.inputs.build_optimization }}"
           echo "工具链: ${{ steps.toolchain-setup.outputs.result }}"
@@ -430,12 +475,14 @@ EOF
         echo "=== 构建报告 ==="
         echo "状态: ${{ job.status }}"
         echo "源码: ${{ env.SOURCE_URL }}"
-        echo "分支: ${{ env.SOURCE_BRANCH }}"
+        echo "请求分支: ${{ env.SOURCE_BRANCH }}"
+        echo "实际分支: ${{ env.ACTUAL_BRANCH }}"
         echo "配置: ${{ github.event.inputs.config_profile }}"
         
         if [ "${{ job.status }}" = "success" ]; then
           echo "🎉 构建成功! 固件已上传到Artifacts"
           echo "⏱️ 编译时长: ${{ env.BUILD_DURATION }}秒"
+          echo "🌿 实际使用分支: ${{ env.ACTUAL_BRANCH }}"
         else
           echo "❌ 构建失败，请检查日志"
           echo ""
@@ -443,4 +490,5 @@ EOF
           echo "  - 尝试使用 'stability' 编译模式"
           echo "  - 检查配置文件是否正确"
           echo "  - 查看是否内存不足导致中断"
+          echo "  - 检查分支名称是否正确 (main/master)"
         fi
