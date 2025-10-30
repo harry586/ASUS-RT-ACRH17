@@ -1,4 +1,4 @@
-name: "Universal Firmware Builder - Fix Directory Issues"
+name: "Universal Firmware Builder - Enhanced Directory Fix"
 
 on:
   workflow_dispatch:
@@ -540,6 +540,39 @@ jobs:
         make defconfig >/dev/null 2>&1 || echo "defconfig 完成"
         echo "✅ 配置验证完成"
 
+    - name: "🔄 预创建目录结构修复"
+      run: |
+        cd ${{ env.SOURCE_DIR }}
+        echo "🔄 预创建必要的目录结构以防止编译错误..."
+        
+        # 创建所有可能的构建目录
+        echo "创建通用构建目录..."
+        mkdir -p build_dir/target-*/root-*
+        mkdir -p build_dir/target-*/linux-*/root-*
+        mkdir -p build_dir/target-*/linux-*/image
+        mkdir -p build_dir/toolchain-*/linux-*
+        
+        # 创建目标特定目录
+        echo "创建目标特定目录..."
+        mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
+        mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-ipq40xx_generic/root-ipq40xx
+        mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-ipq40xx_generic/image
+        
+        # 创建staging目录
+        echo "创建staging目录..."
+        mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
+        mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/etc
+        mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/lib
+        mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/usr
+        mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/bin
+        mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/sbin
+        
+        # 设置正确权限
+        echo "设置目录权限..."
+        chmod -R 755 build_dir/ staging_dir/
+        
+        echo "✅ 目录结构预创建完成"
+
     - name: "💾 编译前关键空间检查"
       run: |
         echo "=== 编译前关键空间检查 ==="
@@ -562,7 +595,7 @@ jobs:
           echo "✅ 磁盘空间充足，可以开始编译"
         fi
 
-    - name: "🏗️ 智能编译固件 - 修复目录问题"
+    - name: "🏗️ 智能编译固件 - 增强目录修复"
       timeout-minutes: 240
       id: compile-firmware
       run: |
@@ -603,6 +636,10 @@ jobs:
             echo "🚀 极速模式: 使用 $CPU_CORES 线程单阶段编译"
             {
               echo "📦 单阶段快速编译"
+              # 编译前再次确保目录存在
+              echo "🔧 编译前目录检查..."
+              mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
+              
               if make -j$CPU_CORES; then
                 echo "✅ 编译命令执行完成"
                 COMPILE_SUCCESS=true
@@ -634,11 +671,13 @@ jobs:
               df -h /mnt
               
               echo "🔧 阶段3: 准备目录并最终组装 (详细输出+单线程用于调试)"
-              # 确保必要的目录存在
+              # 确保必要的目录存在 - 增强目录创建
               echo "🔧 创建必要的目录结构..."
               mkdir -p build_dir/target-*/root-*
               mkdir -p build_dir/target-*/linux-*/root-*
               mkdir -p build_dir/target-*/linux-*/image
+              mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
+              mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
               
               make target/install -j1 V=s
               
@@ -680,12 +719,17 @@ jobs:
               echo "🔧 阶段3: 准备目录并最终组装 (详细输出+单线程用于调试)"
               PHASE3_START=$(date +%s)
               
-              # 确保必要的目录存在
+              # 确保必要的目录存在 - 增强目录创建
               echo "🔧 创建必要的目录结构..."
               mkdir -p build_dir/target-*/root-*
               mkdir -p build_dir/target-*/linux-*/root-*
               mkdir -p build_dir/target-*/linux-*/image
+              mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
+              mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
+              mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/etc
+              mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/lib
               
+              echo "🔧 执行最终安装..."
               make target/install -j1 V=s
               PHASE3_END=$(date +%s)
               PHASE3_DURATION=$((PHASE3_END - PHASE3_START))
