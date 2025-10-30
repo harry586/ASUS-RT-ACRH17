@@ -1,4 +1,4 @@
-name: "Universal Firmware Builder - Debug Stage 3"
+name: "Universal Firmware Builder - Fix Directory Issues"
 
 on:
   workflow_dispatch:
@@ -562,7 +562,7 @@ jobs:
           echo "✅ 磁盘空间充足，可以开始编译"
         fi
 
-    - name: "🏗️ 智能编译固件 - 调试阶段3"
+    - name: "🏗️ 智能编译固件 - 修复目录问题"
       timeout-minutes: 240
       id: compile-firmware
       run: |
@@ -633,7 +633,13 @@ jobs:
               echo "=== 阶段2后磁盘空间 ==="
               df -h /mnt
               
-              echo "🔧 阶段3: 最终组装 (详细输出+单线程用于调试)"
+              echo "🔧 阶段3: 准备目录并最终组装 (详细输出+单线程用于调试)"
+              # 确保必要的目录存在
+              echo "🔧 创建必要的目录结构..."
+              mkdir -p build_dir/target-*/root-*
+              mkdir -p build_dir/target-*/linux-*/root-*
+              mkdir -p build_dir/target-*/linux-*/image
+              
               make target/install -j1 V=s
               
               COMPILE_SUCCESS=true
@@ -671,8 +677,15 @@ jobs:
               df -h /mnt
               
               # 阶段3: 最终组装 - 使用详细输出和单线程进行调试
-              echo "🔧 阶段3: 最终组装 (详细输出+单线程用于调试)"
+              echo "🔧 阶段3: 准备目录并最终组装 (详细输出+单线程用于调试)"
               PHASE3_START=$(date +%s)
+              
+              # 确保必要的目录存在
+              echo "🔧 创建必要的目录结构..."
+              mkdir -p build_dir/target-*/root-*
+              mkdir -p build_dir/target-*/linux-*/root-*
+              mkdir -p build_dir/target-*/linux-*/image
+              
               make target/install -j1 V=s
               PHASE3_END=$(date +%s)
               PHASE3_DURATION=$((PHASE3_END - PHASE3_START))
