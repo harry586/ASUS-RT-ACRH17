@@ -1,4 +1,4 @@
-name: "Universal Firmware Builder - Full Features"
+name: "Universal Firmware Builder - Full Detection & Validation"
 
 on:
   workflow_dispatch:
@@ -65,35 +65,52 @@ jobs:
       with:
         path: firmware-config
 
-    - name: "💾 系统资源深度分析"
+    - name: "💾 深度系统资源分析"
       run: |
-        echo "=== 系统资源深度分析 ==="
-        echo "📊 磁盘空间分析:"
+        echo "=== 深度系统资源分析 ==="
+        echo "📊 磁盘空间详细分析:"
         df -h
         echo ""
-        echo "💻 CPU 信息:"
+        echo "💻 CPU 架构信息:"
         echo "核心数: $(nproc)"
-        lscpu | grep -E "Model name|CPU MHz|CPU max MHz" || true
+        lscpu | grep -E "Architecture|Model name|CPU MHz|CPU max MHz|Threads per core|Cores per socket" || true
         echo ""
-        echo "🧠 内存信息:"
+        echo "🧠 内存详细信息:"
         free -h
+        cat /proc/meminfo | grep -E "MemTotal|MemFree|MemAvailable" || true
         echo ""
-        echo "📁 关键目录空间:"
-        du -sh /home/runner /tmp /opt 2>/dev/null | sort -hr || true
+        echo "📁 关键目录空间使用:"
+        du -sh /home/runner /tmp /opt /var /usr 2>/dev/null | sort -hr | head -10 || true
+        echo ""
+        echo "🔄 交换空间状态:"
+        swapon --show || echo "无交换空间"
 
-    - name: "🔧 高级工作环境设置"
+    - name: "🔧 全面工作环境设置"
       run: |
-        echo "设置高级编译环境..."
+        echo "设置全面编译环境..."
         
         # 创建所有必要目录
-        echo "创建目录结构..."
+        echo "📁 创建目录结构..."
         sudo mkdir -p ${{ env.SOURCE_DIR }} ${{ env.ARTIFACTS_DIR }} ${{ env.CCACHE_DIR }} ${{ env.BUILD_LOG_DIR }} ${{ env.TOOLCHAIN_LOG_DIR }}
         
         # 设置所有权和权限
-        echo "设置目录权限..."
+        echo "🔒 设置目录权限..."
         sudo chown -R $USER:$USER ${{ env.SOURCE_DIR }} ${{ env.ARTIFACTS_DIR }} ${{ env.CCACHE_DIR }} ${{ env.BUILD_LOG_DIR }} ${{ env.TOOLCHAIN_LOG_DIR }}
         sudo chmod -R 755 ${{ env.SOURCE_DIR }} ${{ env.ARTIFACTS_DIR }}
         sudo chmod -R 777 ${{ env.CCACHE_DIR }} ${{ env.BUILD_LOG_DIR }} ${{ env.TOOLCHAIN_LOG_DIR }}
+        
+        # 验证目录创建
+        echo "🔍 验证目录创建..."
+        for dir in ${{ env.SOURCE_DIR }} ${{ env.ARTIFACTS_DIR }} ${{ env.CCACHE_DIR }} ${{ env.BUILD_LOG_DIR }} ${{ env.TOOLCHAIN_LOG_DIR }}; do
+          if [ -d "$dir" ]; then
+            echo "✅ $dir: 创建成功"
+            echo "   权限: $(ls -ld $dir | awk '{print $1}')"
+            echo "   所有者: $(ls -ld $dir | awk '{print $3}')"
+          else
+            echo "❌ $dir: 创建失败"
+            exit 1
+          fi
+        done
         
         echo "🔄 创建高性能交换文件..."
         sudo dd if=/dev/zero of=/swapfile bs=1M count=8192 status=progress
@@ -101,7 +118,7 @@ jobs:
         sudo mkswap /swapfile
         sudo swapon /swapfile
         
-        echo "⚡ 优化系统性能..."
+        echo "⚡ 优化系统性能设置..."
         ulimit -n 65536
         sysctl -w vm.swappiness=60
         sysctl -w vm.vfs_cache_pressure=50
@@ -115,7 +132,7 @@ jobs:
         echo "=== 全面配置文件验证 ==="
         
         # 检查目录结构
-        echo "📁 目录结构检查:"
+        echo "📁 配置文件目录结构:"
         find firmware-config -type f -name "*.json" -o -name ".config_*" | sort
         
         if [ ! -f "firmware-config/repositories.json" ]; then
@@ -144,14 +161,25 @@ jobs:
         fi
         
         echo "✅ repositories.json 存在"
-        echo "📋 配置文件内容:"
+        echo "📋 配置文件内容验证:"
         cat firmware-config/repositories.json
         
         # 验证JSON格式
+        echo "🔍 JSON格式验证..."
         if ! jq empty firmware-config/repositories.json 2>/dev/null; then
           echo "❌ repositories.json 格式错误"
           exit 1
         fi
+        
+        # 验证必需字段
+        echo "🔍 必需字段验证..."
+        for preset in immortalwrt openwrt lede; do
+          if jq -e ".repositories.$preset.url" firmware-config/repositories.json >/dev/null 2>&1; then
+            echo "✅ $preset: URL字段存在"
+          else
+            echo "❌ $preset: URL字段缺失"
+          fi
+        done
         
         echo "✅ 所有配置文件验证通过"
 
@@ -222,18 +250,26 @@ jobs:
             echo "✅ $tool: $version"
           else
             echo "❌ $tool: 未安装"
+            exit 1
           fi
         done
         
         # 验证开发库
         echo "=== 开发库验证 ==="
-        for lib in libssl-dev libncurses5-dev zlib1g-dev; do
+        for lib in libssl-dev libncurses5-dev zlib1g-dev libelf-dev; do
           if dpkg -l | grep -q $lib; then
-            echo "✅ $lib: 已安装"
+            version=$(dpkg -l | grep $lib | awk '{print $3}')
+            echo "✅ $lib: 已安装 ($version)"
           else
             echo "❌ $lib: 未安装"
+            exit 1
           fi
         done
+        
+        # 验证Python环境
+        echo "=== Python环境验证 ==="
+        python3 --version || echo "❌ Python3 未安装"
+        pip3 --version || echo "❌ pip3 未安装"
         
         echo "✅ 所有依赖安装和验证完成"
 
@@ -274,15 +310,15 @@ jobs:
         REQUESTED_BRANCH="${{ env.SOURCE_BRANCH }}"
         echo "🎯 请求分支: $REQUESTED_BRANCH"
         
-        # 定义克隆策略数组
-        CLONE_STRATEGIES=(
-          "指定分支: git clone --depth 1 --branch $REQUESTED_BRANCH ${{ env.SOURCE_URL }} ."
-          "main分支: git clone --depth 1 --branch main ${{ env.SOURCE_URL }} ."
-          "master分支: git clone --depth 1 --branch master ${{ env.SOURCE_URL }} ."
-          "默认分支: git clone --depth 1 ${{ env.SOURCE_URL }} ."
-        )
+        # 定义克隆策略
+        CLONE_STRATEGY_1="指定分支: git clone --depth 1 --branch $REQUESTED_BRANCH ${{ env.SOURCE_URL }} ."
+        CLONE_STRATEGY_2="main分支: git clone --depth 1 --branch main ${{ env.SOURCE_URL }} ."
+        CLONE_STRATEGY_3="master分支: git clone --depth 1 --branch master ${{ env.SOURCE_URL }} ."
+        CLONE_STRATEGY_4="默认分支: git clone --depth 1 ${{ env.SOURCE_URL }} ."
         
-        for strategy in "${CLONE_STRATEGIES[@]}"; do
+        CLONE_STRATEGIES="$CLONE_STRATEGY_1 $CLONE_STRATEGY_2 $CLONE_STRATEGY_3 $CLONE_STRATEGY_4"
+        
+        for strategy in $CLONE_STRATEGIES; do
           strategy_name=$(echo "$strategy" | cut -d: -f1)
           clone_cmd=$(echo "$strategy" | cut -d: -f2-)
           
@@ -313,6 +349,8 @@ jobs:
         git log --oneline -5 || echo "无法获取提交历史"
         echo "🌿 分支信息:"
         git branch -a || echo "无法获取分支信息"
+        echo "🔗 远程仓库:"
+        git remote -v || echo "无法获取远程信息"
         
         echo "✅ 源码获取与验证完成"
 
@@ -371,6 +409,8 @@ EOF
           else
             echo "❌ Feeds更新失败，尝试修复..."
             if [ $i -eq 3 ]; then
+              echo "🔍 Feeds更新失败分析:"
+              tail -50 ${{ env.BUILD_LOG_DIR }}/feeds-update.log 2>/dev/null || echo "无详细日志"
               exit 1
             fi
             sleep 5
@@ -418,6 +458,15 @@ EOF
         
         echo "📋 关键配置项:"
         grep -E "CONFIG_TARGET_|CONFIG_BUSYBOX|CONFIG_LINUX" .config | head -10 || echo "无关键配置信息"
+        
+        # 配置文件完整性检查
+        CONFIG_SIZE=$(stat -c%s .config)
+        if [ "$CONFIG_SIZE" -lt 100 ]; then
+          echo "❌ 配置文件过小，可能损坏"
+          exit 1
+        fi
+        
+        echo "✅ 配置验证完成"
 
     - name: "🔧 高级性能优化配置"
       run: |
@@ -479,8 +528,8 @@ EOF
         
         # Host工具验证
         echo "🔍 Host工具验证..."
-        REQUIRED_HOST_TOOLS=("m4" "flex" "bison")
-        for tool in "${REQUIRED_HOST_TOOLS[@]}"; do
+        REQUIRED_HOST_TOOLS="m4 flex bison"
+        for tool in $REQUIRED_HOST_TOOLS; do
           if [ -f "staging_dir/host/bin/$tool" ]; then
             echo "✅ $tool: 存在"
           else
@@ -524,6 +573,7 @@ EOF
             echo "✅ $tool: $version"
           else
             echo "❌ $tool: 缺失或不可执行"
+            exit 1
           fi
         done
         
@@ -532,6 +582,7 @@ EOF
         echo "🎯 目标工具链验证:"
         TARGET_GCC=$(find staging_dir/toolchain-*/bin/ -name "*gcc" -type f 2>/dev/null | head -1)
         TARGET_STRIP=$(find staging_dir/toolchain-*/bin/ -name "*strip" -type f 2>/dev/null | head -1)
+        TARGET_LD=$(find staging_dir/toolchain-*/bin/ -name "*ld" -type f 2>/dev/null | head -1)
         
         if [ -n "$TARGET_GCC" ] && [ -x "$TARGET_GCC" ]; then
           echo "✅ 目标GCC: $TARGET_GCC"
@@ -545,6 +596,24 @@ EOF
           echo "✅ 目标STRIP: $TARGET_STRIP"
         else
           echo "❌ 目标STRIP: 缺失或不可执行"
+        fi
+        
+        if [ -n "$TARGET_LD" ] && [ -x "$TARGET_LD" ]; then
+          echo "✅ 目标LD: $TARGET_LD"
+        else
+          echo "❌ 目标LD: 缺失或不可执行"
+        fi
+        
+        # 工具链完整性检查
+        echo ""
+        echo "🔍 工具链完整性检查..."
+        TOOLCHAIN_BIN_DIR=$(dirname "$TARGET_GCC" 2>/dev/null)
+        if [ -n "$TOOLCHAIN_BIN_DIR" ] && [ -d "$TOOLCHAIN_BIN_DIR" ]; then
+          TOOL_COUNT=$(ls "$TOOLCHAIN_BIN_DIR" | wc -l)
+          echo "工具链工具数量: $TOOL_COUNT"
+          if [ "$TOOL_COUNT" -lt 10 ]; then
+            echo "⚠️ 工具链工具数量过少，可能不完整"
+          fi
         fi
         
         echo "✅ 深度工具链验证完成"
@@ -564,6 +633,19 @@ EOF
             mkdir -p package/base-files/files/usr/lib/opkg/custom
             find "$IPK_DIR" -name "*.ipk" -exec cp {} package/base-files/files/usr/lib/opkg/custom/ \;
             echo "✅ 已复制 $IPK_COUNT 个IPK包"
+            
+            # 验证IPK包
+            echo "🔍 验证IPK包..."
+            for ipk in package/base-files/files/usr/lib/opkg/custom/*.ipk; do
+              if [ -f "$ipk" ]; then
+                ipk_size=$(stat -c%s "$ipk")
+                if [ "$ipk_size" -gt 1000 ]; then
+                  echo "✅ $(basename $ipk): 有效 ($ipk_size 字节)"
+                else
+                  echo "⚠️ $(basename $ipk): 文件过小，可能损坏"
+                fi
+              fi
+            done
           else
             echo "ℹ️ 无IPK包文件"
           fi
@@ -618,11 +700,16 @@ EOF
         find build_dir staging_dir -name "lock" -type d -exec chmod 755 {} \; 2>/dev/null || true
         find build_dir staging_dir -type d -exec chmod 755 {} \; 2>/dev/null || true
         
+        # 验证目录创建
+        echo "🔍 验证目录创建..."
+        DIR_COUNT=$(find build_dir staging_dir -type d | wc -l)
+        echo "创建的目录数量: $DIR_COUNT"
+        
         echo "✅ 目录结构预创建完成"
 
-    - name: "💾 编译前最终空间监测"
+    - name: "💾 编译前最终空间监测与清理"
       run: |
-        echo "=== 编译前最终空间监测 ==="
+        echo "=== 编译前最终空间监测与清理 ==="
         echo "📊 详细磁盘使用情况:"
         df -h
         
@@ -635,6 +722,13 @@ EOF
           exit 1
         elif [ "$AVAILABLE_GB" -lt 20 ]; then
           echo "⚠️ 严重警告: 磁盘空间紧张 (${AVAILABLE_GB}GB)，编译可能失败"
+          echo "🧹 执行紧急空间清理..."
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo sync
+          echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
+          echo "📊 清理后空间:"
+          df -h
         elif [ "$AVAILABLE_GB" -lt 30 ]; then
           echo "⚠️ 警告: 磁盘空间有限 (${AVAILABLE_GB}GB)"
         else
@@ -710,6 +804,24 @@ EOF
           "balanced")
             echo "⚖️ 执行平衡编译模式..."
             LOG_FILE="${{ env.BUILD_LOG_DIR }}/balanced-compile.log"
+            {
+              set -e
+              echo "阶段1: 编译内核和基础包..."
+              make target/linux/compile -j$CPU_CORES V=s
+              
+              echo "阶段2: 编译所有软件包..."
+              make package/compile -j$((CPU_CORES / 2)) V=s
+              
+              echo "阶段3: 最终安装..."
+              make target/install -j1 V=s
+              
+              COMPILE_SUCCESS=true
+              BUILD_EXIT_CODE=0
+            } 2>&1 | tee "$LOG_FILE"
+            ;;
+          *)
+            echo "⚖️ 执行默认编译模式..."
+            LOG_FILE="${{ env.BUILD_LOG_DIR }}/default-compile.log"
             {
               set -e
               echo "阶段1: 编译内核和基础包..."
@@ -827,51 +939,86 @@ EOF
         path: artifacts
         retention-days: 30
 
-    - name: "🧹 全面环境清理"
+    - name: "🧹 编译后智能清理"
       if: always()
       run: |
-        echo "开始全面环境清理..."
+        echo "开始编译后智能清理..."
         
         # 显示清理前状态
         echo "=== 清理前状态 ==="
         df -h
-        echo ""
-        echo "内存使用:"
         free -h
         
-        # 安全清理编译环境
-        echo "🧹 清理编译目录..."
-        sudo rm -rf ${{ env.SOURCE_DIR }} 2>/dev/null || echo "源码目录已清理"
-        sudo rm -rf ${{ env.ARTIFACTS_DIR }} 2>/dev/null || echo "产物目录已清理"
+        # 无论编译成功与否，都清理这些临时文件
+        echo "🧹 清理编译临时文件..."
+        if [ -d "${{ env.SOURCE_DIR }}" ]; then
+          # 保留源码但清理构建目录
+          cd ${{ env.SOURCE_DIR }}
+          rm -rf build_dir/* staging_dir/* tmp/* 2>/dev/null || true
+          # 但如果是编译失败，我们保留更多文件用于调试
+          if [ "${{ env.BUILD_STATUS }}" != "success" ]; then
+            echo "⚠️ 编译失败，保留源码和关键目录用于调试"
+            echo "📁 保留的目录:"
+            ls -la | head -10
+          else
+            echo "✅ 编译成功，清理构建目录"
+          fi
+        fi
         
-        # 清理缓存但保留统计
-        echo "🧹 清理缓存目录..."
-        rm -rf ${{ env.CCACHE_DIR }}/* 2>/dev/null || echo "缓存目录已清理"
+        # 清理缓存目录
+        echo "🧹 清理缓存..."
+        rm -rf ${{ env.CCACHE_DIR }}/* 2>/dev/null || true
         
-        # 清理日志目录
-        echo "🧹 清理日志目录..."
-        rm -rf ${{ env.BUILD_LOG_DIR }} 2>/dev/null || echo "构建日志已清理"
-        rm -rf ${{ env.TOOLCHAIN_LOG_DIR }} 2>/dev/null || echo "工具链日志已清理"
+        # 清理日志目录（但保留最新的）
+        echo "🧹 清理日志..."
+        rm -rf ${{ env.BUILD_LOG_DIR }}/* ${{ env.TOOLCHAIN_LOG_DIR }}/* 2>/dev/null || true
+        
+        # 清理产物目录
+        echo "🧹 清理产物目录..."
+        rm -rf ${{ env.ARTIFACTS_DIR }} 2>/dev/null || true
         
         # 清理交换文件
         echo "🧹 清理交换文件..."
-        sudo swapoff /swapfile 2>/dev/null || echo "交换文件已卸载"
-        sudo rm -f /swapfile 2>/dev/null || echo "交换文件已删除"
+        sudo swapoff /swapfile 2>/dev/null || true
+        sudo rm -f /swapfile 2>/dev/null || true
         
-        # 清理临时文件
-        echo "🧹 清理系统临时文件..."
-        sudo rm -rf /tmp/* 2>/dev/null || echo "临时文件已清理"
-        sudo rm -rf /var/tmp/* 2>/dev/null || echo "系统临时文件已清理"
+        # 系统级清理
+        echo "🧹 系统级清理..."
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
+        sudo rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
         
         # 显示清理后状态
         echo ""
         echo "=== 清理后状态 ==="
         df -h
-        echo ""
-        echo "内存使用:"
         free -h
         
-        echo "✅ 全面环境清理完成"
+        echo "✅ 智能清理完成"
+
+    - name: "🧹 最终环境清理"
+      if: always()
+      run: |
+        echo "开始最终环境清理..."
+        
+        # 这个步骤确保无论前面发生了什么，都会清理所有临时文件
+        # 防止占用GitHub Actions的磁盘空间
+        
+        echo "🧹 最终清理所有临时目录..."
+        sudo rm -rf ${{ env.SOURCE_DIR }} 2>/dev/null || echo "源码目录已清理"
+        sudo rm -rf ${{ env.ARTIFACTS_DIR }} 2>/dev/null || echo "产物目录已清理"
+        sudo rm -rf ${{ env.CCACHE_DIR }} 2>/dev/null || echo "缓存目录已清理"
+        sudo rm -rf ${{ env.BUILD_LOG_DIR }} 2>/dev/null || echo "构建日志已清理"
+        sudo rm -rf ${{ env.TOOLCHAIN_LOG_DIR }} 2>/dev/null || echo "工具链日志已清理"
+        
+        # 再次确保交换文件被清理
+        sudo swapoff /swapfile 2>/dev/null || true
+        sudo rm -f /swapfile 2>/dev/null || true
+        
+        echo "📊 最终磁盘状态:"
+        df -h
+        
+        echo "✅ 最终环境清理完成"
 
     - name: "📊 最终综合报告"
       if: always()
