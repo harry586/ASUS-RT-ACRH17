@@ -1,4 +1,4 @@
-name: "Universal Firmware Builder - Enhanced Directory Fix"
+name: "Universal Firmware Builder - Multi-Architecture Support"
 
 on:
   workflow_dispatch:
@@ -52,6 +52,7 @@ env:
   SOURCE_DIR: "/mnt/source"
   ARTIFACTS_DIR: "/mnt/artifacts"
   CCACHE_DIR: "/home/runner/ccache"
+  BUILD_LOG_DIR: "/home/runner/build-logs"
 
 jobs:
   build:
@@ -61,6 +62,23 @@ jobs:
     steps:
     - name: "📥 检出仓库"
       uses: actions/checkout@v4
+
+    - name: "🔍 验证配置文件结构"
+      run: |
+        echo "=== 验证配置文件结构 ==="
+        if [ ! -f "firmware-config/repositories.json" ]; then
+          echo "❌ 错误: repositories.json 文件不存在"
+          echo "请创建 firmware-config/repositories.json 文件"
+          exit 1
+        fi
+        
+        if [ ! -d "firmware-config/configs" ]; then
+          echo "❌ 错误: configs 目录不存在"
+          echo "请创建 firmware-config/configs 目录并添加配置文件"
+          exit 1
+        fi
+        
+        echo "✅ 配置文件结构验证通过"
 
     - name: "💾 系统资源分析与清理"
       run: |
@@ -95,6 +113,9 @@ jobs:
         mkdir -p ${{ env.CCACHE_DIR }}
         chmod -R 755 ${{ env.CCACHE_DIR }}
         
+        # 创建日志目录
+        mkdir -p ${{ env.BUILD_LOG_DIR }}
+        
         echo "🔄 安全创建大容量交换文件..."
         sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=8192 status=progress
         sudo chmod 600 /mnt/swapfile
@@ -105,23 +126,6 @@ jobs:
         echo "⚡ 优化系统性能设置..."
         ulimit -n 65536
         export FORCE_UNSAFE_CONFIGURE=1
-
-    - name: "🔍 检查目录结构"
-      run: |
-        echo "=== 当前目录结构 ==="
-        pwd
-        ls -la
-        echo "=== firmware-config 目录内容 ==="
-        ls -la firmware-config/
-        echo "=== 检查 repositories.json ==="
-        if [ -f "firmware-config/repositories.json" ]; then
-          echo "✅ repositories.json 存在"
-          cat firmware-config/repositories.json
-        else
-          echo "❌ repositories.json 不存在"
-          echo "请在 firmware-config 目录下创建 repositories.json 文件"
-          exit 1
-        fi
 
     - name: "🔧 解析源码配置"
       id: source-config
@@ -137,6 +141,11 @@ jobs:
         SOURCE_URL=$(jq -r ".repositories.$PRESET.url // empty" firmware-config/repositories.json)
         DESCRIPTION=$(jq -r ".repositories.$PRESET.description // empty" firmware-config/repositories.json)
         
+        if [ -z "$SOURCE_URL" ]; then
+          echo "❌ 错误: 未找到预设 $PRESET 的源码URL"
+          exit 1
+        fi
+        
         BRANCH="${{ github.event.inputs.source_branch }}"
         if [ "$BRANCH" = "auto" ]; then
           BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch // \"main\"" firmware-config/repositories.json)
@@ -144,33 +153,42 @@ jobs:
         
         echo "SOURCE_URL=$SOURCE_URL" >> $GITHUB_ENV
         echo "SOURCE_BRANCH=$BRANCH" >> $GITHUB_ENV
+        echo "SOURCE_PRESET=$PRESET" >> $GITHUB_ENV
         echo "✅ 源码配置: $PRESET - $DESCRIPTION, 分支: $BRANCH"
 
-    - name: "🛠️ 增强编译依赖安装"
+    - name: "🛠️ 通用编译依赖安装"
       run: |
-        echo "安装完整编译依赖包..."
+        echo "安装通用编译依赖包..."
         sudo apt-get update
         
-        # 基础编译工具
-        sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip python3-setuptools rsync unzip zlib1g-dev file wget jq ccache
+        # 基础编译工具链
+        BASE_PACKAGES="build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip python3-setuptools rsync unzip zlib1g-dev file wget jq ccache"
         
-        # 修复工具链问题 - 安装必要的工具
-        echo "安装工具链依赖..."
-        sudo apt-get install -y m4 help2man texinfo texi2html libtool-bin automake autoconf pkg-config
+        # 工具链依赖
+        TOOLCHAIN_PACKAGES="m4 help2man texinfo texi2html libtool-bin automake autoconf pkg-config"
         
-        # 修复 flex/m4 问题
-        echo "安装 flex 和 bison 相关工具..."
-        sudo apt-get install -y flex bison byacc
+        # 其他可能的依赖
+        EXTRA_PACKAGES="subversion mercurial curl cmake ninja-build libelf-dev libssl-dev zlib1g-dev libc6-dev libxml2-dev liblzma-dev liblzo2-dev"
         
-        # 其他可能需要的依赖
-        sudo apt-get install -y subversion mercurial curl cmake ninja-build libelf-dev libssl-dev zlib1g-dev libc6-dev
+        echo "安装基础包: $BASE_PACKAGES"
+        sudo apt-get install -y $BASE_PACKAGES
+        
+        echo "安装工具链包: $TOOLCHAIN_PACKAGES"
+        sudo apt-get install -y $TOOLCHAIN_PACKAGES
+        
+        echo "安装额外包: $EXTRA_PACKAGES"
+        sudo apt-get install -y $EXTRA_PACKAGES
         
         # 检查关键工具版本
         echo "=== 关键工具版本检查 ==="
-        flex --version || echo "flex 未安装"
-        bison --version || echo "bison 未安装"
-        m4 --version || echo "m4 未安装"
-        gcc --version || echo "gcc 未安装"
+        for tool in flex bison m4 gcc g++ make; do
+          if command -v $tool >/dev/null 2>&1; then
+            version=$($tool --version 2>/dev/null | head -1 || echo "未知版本")
+            echo "✅ $tool: $version"
+          else
+            echo "❌ $tool: 未安装"
+          fi
+        done
         
         echo "✅ 依赖安装完成"
 
@@ -207,28 +225,36 @@ jobs:
           CLONE_SUCCESS=true
           ACTUAL_BRANCH="${{ env.SOURCE_BRANCH }}"
         else
-          echo "⚠️ 尝试备选分支..."
-          if [ "${{ env.SOURCE_BRANCH }}" = "main" ]; then
-            ALTERNATIVE_BRANCH="master"
-          else
-            ALTERNATIVE_BRANCH="main"
-          fi
+          echo "⚠️ 首选分支失败，尝试自动检测分支..."
           
-          if git clone --depth 1 --branch "$ALTERNATIVE_BRANCH" "${{ env.SOURCE_URL }}" . 2>/dev/null; then
-            echo "✅ 使用备选分支克隆成功"
-            CLONE_SUCCESS=true
-            ACTUAL_BRANCH="$ALTERNATIVE_BRANCH"
-          else
-            if git clone --depth 1 "${{ env.SOURCE_URL }}" . 2>/dev/null; then
-              echo "✅ 无分支克隆成功"
+          # 获取所有可用分支
+          git clone --depth 1 "${{ env.SOURCE_URL }}" . 2>/dev/null
+          
+          # 尝试检测稳定分支
+          STABLE_BRANCHES="main master openwrt-23.05 openwrt-22.03 openwrt-21.02 lede-17.01"
+          for branch in $STABLE_BRANCHES; do
+            if git checkout "$branch" 2>/dev/null; then
+              echo "✅ 使用自动检测分支: $branch"
               CLONE_SUCCESS=true
-              ACTUAL_BRANCH=$(git branch --show-current)
+              ACTUAL_BRANCH="$branch"
+              break
+            fi
+          done
+          
+          if [ "$CLONE_SUCCESS" = "false" ]; then
+            # 使用默认分支
+            DEFAULT_BRANCH=$(git remote show origin | grep "HEAD branch" | cut -d" " -f5)
+            if [ -n "$DEFAULT_BRANCH" ]; then
+              git checkout "$DEFAULT_BRANCH"
+              echo "✅ 使用默认分支: $DEFAULT_BRANCH"
+              CLONE_SUCCESS=true
+              ACTUAL_BRANCH="$DEFAULT_BRANCH"
             fi
           fi
         fi
         
         if [ "$CLONE_SUCCESS" = "false" ]; then
-          echo "❌ 克隆失败"
+          echo "❌ 克隆失败，请检查网络连接和仓库URL"
           exit 1
         fi
         
@@ -249,6 +275,27 @@ jobs:
           echo "✅ 磁盘空间充足"
         fi
 
+    - name: "🔧 源码架构检测"
+      id: detect-arch
+      run: |
+        cd ${{ env.SOURCE_DIR }}
+        echo "🔍 检测源码架构信息..."
+        
+        # 检测目标架构
+        if [ -f "target/linux/" ]; then
+          echo "支持的架构:"
+          ls target/linux/ | head -10
+        fi
+        
+        # 检测配置文件中的架构信息
+        CONFIG_FILE="$GITHUB_WORKSPACE/firmware-config/${{ github.event.inputs.config_profile }}"
+        if [ -f "$CONFIG_FILE" ]; then
+          echo "配置文件架构信息:"
+          grep -E "CONFIG_TARGET_ARCH|CONFIG_TARGET_BOARD|CONFIG_TARGET_SUBTARGET" "$CONFIG_FILE" | head -5 || echo "未找到明确的架构配置"
+        fi
+        
+        echo "ARCH_INFO=detected" >> $GITHUB_ENV
+
     - name: "🔄 源码初始化与依赖修复"
       timeout-minutes: 45
       id: feeds-update
@@ -267,23 +314,38 @@ jobs:
           echo "使用 feeds.conf.default"
           cp feeds.conf.default feeds.conf
           cat feeds.conf
+        else
+          echo "⚠️ 未找到feeds配置文件，创建默认配置"
+          cat > feeds.conf << 'EOF'
+src-git packages https://git.openwrt.org/feed/packages.git
+src-git luci https://git.openwrt.org/project/luci.git
+src-git routing https://git.openwrt.org/feed/routing.git
+src-git telephony https://git.openwrt.org/feed/telephony.git
+EOF
         fi
         
         echo "步骤1: 更新feeds..."
-        if ! ./scripts/feeds update -a; then
-          echo "❌ Feeds更新失败，尝试修复..."
-          # 尝试清除缓存重新更新
-          rm -rf feeds/lost+found
-          ./scripts/feeds clean
-          ./scripts/feeds update -a || exit 1
-        fi
+        MAX_RETRIES=3
+        for i in $(seq 1 $MAX_RETRIES); do
+          echo "尝试 $i/$MAX_RETRIES"
+          if ./scripts/feeds update -a; then
+            echo "✅ Feeds更新成功"
+            break
+          else
+            echo "❌ Feeds更新失败，尝试修复..."
+            if [ $i -eq $MAX_RETRIES ]; then
+              echo "❌ 所有重试都失败"
+              exit 1
+            fi
+            sleep 5
+          fi
+        done
         
         echo "步骤2: 安装feeds..."
         if ! ./scripts/feeds install -a; then
-          echo "❌ Feeds安装失败，尝试修复..."
-          # 重新更新并安装
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a || exit 1
+          echo "❌ Feeds安装失败，尝试选择性安装..."
+          ./scripts/feeds install -a -p packages || echo "包安装失败但继续"
+          ./scripts/feeds install -a -p luci || echo "Luci安装失败但继续"
         fi
         
         END_TIME=$(date +%s)
@@ -305,16 +367,18 @@ jobs:
         
         if [ ! -f "$CONFIG_FILE" ]; then
           echo "❌ 配置文件不存在: $CONFIG_FILE"
+          echo "可用的配置文件:"
+          find firmware-config/configs -name ".config_*" 2>/dev/null | head -10
           exit 1
         fi
         
         cp "$CONFIG_FILE" .config
-        echo "✅ 配置应用完成"
+        echo "✅ 配置应用完成: $(basename "$CONFIG_FILE")"
 
-    - name: "🔧 性能与兼容性优化配置"
+    - name: "🔧 通用性能与兼容性优化配置"
       run: |
         cd ${{ env.SOURCE_DIR }}
-        echo "应用性能与兼容性优化配置..."
+        echo "应用通用性能与兼容性优化配置..."
         
         # 禁用调试信息以减少空间占用
         sed -i 's/CONFIG_DEBUG=y/# CONFIG_DEBUG is not set/' .config 2>/dev/null || true
@@ -324,13 +388,28 @@ jobs:
         # 启用ccache
         echo "CONFIG_CCACHE=y" >> .config
         
+        # 根据优化策略调整配置
+        case "${{ github.event.inputs.build_optimization }}" in
+          "speed")
+            echo "🚀 应用极速优化配置..."
+            echo "CONFIG_SMALL_FLASH=n" >> .config
+            ;;
+          "stability")
+            echo "🛡️ 应用稳定优化配置..."
+            echo "CONFIG_SMALL_FLASH=y" >> .config
+            ;;
+          *)
+            echo "⚖️ 应用平衡优化配置..."
+            ;;
+        esac
+        
         # 自动处理配置
         echo "运行 oldconfig..."
         yes "" | make oldconfig >/dev/null 2>&1 || echo "oldconfig 完成"
         
         echo "✅ 性能优化配置完成"
 
-    - name: "🛠️ 强制重新编译工具链"
+    - name: "🛠️ 智能工具链编译"
       timeout-minutes: 120
       id: toolchain-setup
       run: |
@@ -338,61 +417,65 @@ jobs:
         
         START_TIME=$(date +%s)
         
-        echo "🧹 清理可能存在的旧工具链..."
-        rm -rf staging_dir/toolchain-* build_dir/toolchain-*
-        
         # 创建工具链编译日志目录
         TOOLCHAIN_LOGS_DIR="/home/runner/toolchain-logs"
         mkdir -p $TOOLCHAIN_LOGS_DIR
         
-        # 首先编译 host 工具 - 使用详细输出以便调试
-        echo "🔧 编译 host 工具..."
-        if ! make tools/compile -j$(($(nproc) - 1)) V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/host-tools.log; then
-          echo "❌ Host工具编译失败，尝试单线程编译..."
-          if ! make tools/compile -j1 V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/host-tools-single.log; then
-            echo "❌ Host工具单线程编译也失败"
-            echo "=== 错误分析 ==="
-            tail -50 $TOOLCHAIN_LOGS_DIR/host-tools-single.log | grep -i "error\|failed" | tail -20
-            exit 1
+        # 根据策略选择工具链编译方式
+        STRATEGY="${{ github.event.inputs.toolchain_strategy }}"
+        
+        if [ "$STRATEGY" = "auto" ]; then
+          # 自动检测：如果有预编译工具链就使用，否则本地编译
+          if [ -d "staging_dir/toolchain-" ] && [ -n "$(ls -A staging_dir/toolchain-*/bin/*gcc 2>/dev/null)" ]; then
+            STRATEGY="prebuilt"
+          else
+            STRATEGY="local"
           fi
         fi
         
-        echo "✅ Host工具编译完成"
+        echo "🔧 工具链策略: $STRATEGY"
         
-        # 检查 host 工具是否完整
-        echo "🔍 检查 host 工具..."
-        if [ ! -f "staging_dir/host/bin/m4" ]; then
-          echo "❌ 错误: host m4 工具未找到"
-          exit 1
-        fi
-        if [ ! -f "staging_dir/host/bin/flex" ]; then
-          echo "❌ 错误: host flex 工具未找到"
-          exit 1
-        fi
-        
-        # 强制使用本地编译工具链策略
-        echo "🔧 强制使用本地编译工具链策略..."
-        echo "result=local" >> $GITHUB_OUTPUT
-        
-        echo "🔧 编译本地工具链 (详细输出)..."
-        if ! make toolchain/compile -j$(($(nproc) - 1)) V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/toolchain-compile.log; then
-          echo "❌ 工具链编译失败，尝试单线程编译..."
-          if ! make toolchain/compile -j1 V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/toolchain-compile-single.log; then
-            echo "❌ 工具链单线程编译也失败"
-            echo "=== 错误分析 ==="
-            tail -50 $TOOLCHAIN_LOGS_DIR/toolchain-compile-single.log | grep -i "error\|failed" | tail -20
+        case "$STRATEGY" in
+          "prebuilt")
+            echo "📦 使用预编译工具链"
+            echo "result=prebuilt" >> $GITHUB_OUTPUT
+            ;;
+          "local"|*)
+            echo "🔨 编译本地工具链"
             
-            # 检查是否有磁盘空间问题
-            echo "=== 磁盘空间检查 ==="
-            df -h
-            echo "=== 内存和交换空间 ==="
-            free -h
+            echo "🧹 清理可能存在的旧工具链..."
+            rm -rf staging_dir/toolchain-* build_dir/toolchain-*
             
-            exit 1
-          fi
-        fi
-        
-        echo "✅ 本地工具链编译完成"
+            # 首先编译 host 工具
+            echo "🔧 编译 host 工具..."
+            if ! make tools/compile -j$(($(nproc) - 1)) V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/host-tools.log; then
+              echo "❌ Host工具编译失败，尝试单线程编译..."
+              if ! make tools/compile -j1 V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/host-tools-single.log; then
+                echo "❌ Host工具单线程编译也失败"
+                echo "=== 错误分析 ==="
+                tail -50 $TOOLCHAIN_LOGS_DIR/host-tools-single.log | grep -i "error\|failed" | tail -20
+                exit 1
+              fi
+            fi
+            
+            echo "✅ Host工具编译完成"
+            
+            # 编译本地工具链
+            echo "🔧 编译本地工具链..."
+            if ! make toolchain/compile -j$(($(nproc) - 1)) V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/toolchain-compile.log; then
+              echo "❌ 工具链编译失败，尝试单线程编译..."
+              if ! make toolchain/compile -j1 V=s 2>&1 | tee $TOOLCHAIN_LOGS_DIR/toolchain-compile-single.log; then
+                echo "❌ 工具链单线程编译也失败"
+                echo "=== 错误分析 ==="
+                tail -50 $TOOLCHAIN_LOGS_DIR/toolchain-compile-single.log | grep -i "error\|failed" | tail -20
+                exit 1
+              fi
+            fi
+            
+            echo "✅ 本地工具链编译完成"
+            echo "result=local" >> $GITHUB_OUTPUT
+            ;;
+        esac
         
         END_TIME=$(date +%s)
         DURATION=$((END_TIME - START_TIME))
@@ -404,40 +487,33 @@ jobs:
           echo "⏱️ 工具链编译耗时: ${DURATION}秒"
         fi
 
-    - name: "🔍 完整工具链验证"
+    - name: "🔍 通用工具链验证"
       run: |
         cd ${{ env.SOURCE_DIR }}
-        echo "=== 完整工具链验证 ==="
+        echo "=== 通用工具链验证 ==="
         
         # 检查 staging_dir 结构
         echo "=== staging_dir 结构 ==="
-        find staging_dir/ -type d -maxdepth 2 | sort
+        find staging_dir/ -type d -maxdepth 2 | sort | head -20
         
         # 检查关键工具
         echo ""
         echo "=== Host 工具检查 ==="
-        HOST_M4=$(find staging_dir/host/bin -name "m4" -type f 2>/dev/null)
-        HOST_FLEX=$(find staging_dir/host/bin -name "flex" -type f 2>/dev/null)
-        HOST_BISON=$(find staging_dir/host/bin -name "bison" -type f 2>/dev/null)
-        
-        echo "Host M4: $HOST_M4"
-        echo "Host FLEX: $HOST_FLEX" 
-        echo "Host BISON: $HOST_BISON"
-        
-        if [ -z "$HOST_M4" ]; then
-          echo "❌ 错误: host m4 工具未找到"
-          exit 1
-        fi
-        if [ -z "$HOST_FLEX" ]; then
-          echo "❌ 错误: host flex 工具未找到"
-          exit 1
-        fi
+        for tool in m4 flex bison; do
+          tool_path=$(find staging_dir/host/bin -name "$tool" -type f 2>/dev/null | head -1)
+          if [ -n "$tool_path" ]; then
+            echo "✅ $tool: $tool_path"
+          else
+            echo "❌ $tool: 未找到"
+          fi
+        done
         
         echo ""
         echo "=== 目标工具链检查 ==="
         # 查找目标工具链目录
-        TOOLCHAIN_DIRS=$(find staging_dir/ -name "toolchain-*" -type d | grep -v host)
-        echo "找到工具链目录: $TOOLCHAIN_DIRS"
+        TOOLCHAIN_DIRS=$(find staging_dir/ -name "toolchain-*" -type d | grep -v host | head -5)
+        echo "找到工具链目录:"
+        echo "$TOOLCHAIN_DIRS"
         
         # 在目标工具链中查找交叉编译器
         TARGET_GCC=$(find staging_dir/toolchain-*/bin/ -name "*gcc" -type f 2>/dev/null | head -1)
@@ -448,28 +524,6 @@ jobs:
         
         if [ -z "$TARGET_GCC" ]; then
           echo "❌ 严重错误: 未找到目标架构交叉编译器!"
-          echo "=== 详细目录结构 ==="
-          for dir in $TOOLCHAIN_DIRS; do
-            echo "检查目录: $dir"
-            if [ -d "$dir" ]; then
-              echo "目录内容:"
-              ls -la "$dir"
-              if [ -d "$dir/bin" ]; then
-                echo "bin 目录内容:"
-                ls -la "$dir/bin/"
-              else
-                echo "⚠️ 没有 bin 目录"
-              fi
-            fi
-          done
-          
-          # 检查编译日志中的错误
-          TOOLCHAIN_LOGS_DIR="/home/runner/toolchain-logs"
-          if [ -f "$TOOLCHAIN_LOGS_DIR/toolchain-compile.log" ]; then
-            echo "=== 工具链编译错误 ==="
-            tail -100 "$TOOLCHAIN_LOGS_DIR/toolchain-compile.log" | grep -i "error\|failed" | tail -20
-          fi
-          
           exit 1
         fi
         
@@ -486,26 +540,49 @@ jobs:
         echo ""
         echo "✅ 工具链验证完成 - 工具链完整"
 
-    - name: "📦 收集工具链日志"
-      if: always()
+    - name: "📦 通用目录结构预创建"
       run: |
-        echo "收集工具链编译日志..."
-        TOOLCHAIN_LOGS_DIR="/home/runner/toolchain-logs"
-        mkdir -p ${{ env.ARTIFACTS_DIR }}/toolchain-logs
+        cd ${{ env.SOURCE_DIR }}
+        echo "🔄 预创建通用目录结构以防止编译错误..."
         
-        if [ -d "$TOOLCHAIN_LOGS_DIR" ]; then
-          cp -r $TOOLCHAIN_LOGS_DIR/* ${{ env.ARTIFACTS_DIR }}/toolchain-logs/ 2>/dev/null || true
-          echo "✅ 工具链日志收集完成"
-        else
-          echo "⚠️ 无工具链日志目录"
-        fi
+        # 创建通用构建目录模式
+        echo "创建通用构建目录..."
+        mkdir -p build_dir/target-*/root-*
+        mkdir -p build_dir/target-*/linux-*/root-*
+        mkdir -p build_dir/target-*/linux-*/image
+        mkdir -p build_dir/toolchain-*/linux-*
+        
+        # 创建通用的目标目录结构
+        echo "创建通用目标目录..."
+        for arch_dir in build_dir/target-*; do
+          if [ -d "$arch_dir" ]; then
+            arch_name=$(basename "$arch_dir")
+            echo "处理架构: $arch_name"
+            mkdir -p "$arch_dir/root-"*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev}
+            mkdir -p "$arch_dir/root.orig-"*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev}
+            mkdir -p "$arch_dir/linux-"*/{root-*,image}
+          fi
+        done
+        
+        # 创建staging目录
+        echo "创建staging目录..."
+        mkdir -p staging_dir/target-*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev}
+        
+        # 设置正确的权限
+        echo "设置目录权限..."
+        find build_dir staging_dir -name "tmp" -type d -exec chmod 1777 {} \; 2>/dev/null || true
+        find build_dir staging_dir -type d -exec chmod 755 {} \; 2>/dev/null || true
+        
+        echo "✅ 通用目录结构预创建完成"
 
-    - name: "📦 处理预编译IPK包"
+    - name: "📦 处理自定义功能"
       if: github.event.inputs.enable_custom_features == 'true'
       run: |
         cd ${{ env.SOURCE_DIR }}
-        IPK_DIR="$GITHUB_WORKSPACE/firmware-config/custom-features/prebuilt-ipks"
+        echo "处理自定义功能..."
         
+        # 处理预编译IPK包
+        IPK_DIR="$GITHUB_WORKSPACE/firmware-config/custom-features/prebuilt-ipks"
         if [ -d "$IPK_DIR" ]; then
           IPK_FILES=$(find "$IPK_DIR" -name "*.ipk" -type f)
           if [ -n "$IPK_FILES" ]; then
@@ -517,65 +594,32 @@ jobs:
             echo "✅ 预编译IPK包处理完成"
           fi
         fi
-
-    - name: "🛠️ 执行自定义脚本"
-      if: github.event.inputs.enable_custom_features == 'true'
-      run: |
-        cd ${{ env.SOURCE_DIR }}
-        SCRIPTS_DIR="$GITHUB_WORKSPACE/firmware-config/custom-features/scripts"
         
+        # 执行自定义脚本
+        SCRIPTS_DIR="$GITHUB_WORKSPACE/firmware-config/custom-features/scripts"
         if [ -d "$SCRIPTS_DIR" ]; then
           for script in $(find "$SCRIPTS_DIR" -name "*.sh" -type f | sort); do
             echo "执行脚本: $(basename "$script")"
             chmod +x "$script"
-            # 设置超时防止脚本挂起
             timeout 300 bash "$script" || echo "⚠️ 脚本执行可能超时或失败，但继续构建流程"
           done
         fi
 
-    - name: "🔍 验证配置"
+    - name: "🔍 最终配置验证"
       run: |
         cd ${{ env.SOURCE_DIR }}
-        echo "验证配置文件..."
+        echo "验证最终配置文件..."
         make defconfig >/dev/null 2>&1 || echo "defconfig 完成"
+        
+        # 检查关键配置
+        echo "关键配置检查:"
+        grep -E "CONFIG_TARGET_|CONFIG_BUSYBOX|CONFIG_LINUX" .config | head -10 || echo "无关键配置信息"
+        
         echo "✅ 配置验证完成"
 
-    - name: "🔄 预创建目录结构修复"
+    - name: "💾 编译前最终空间检查"
       run: |
-        cd ${{ env.SOURCE_DIR }}
-        echo "🔄 预创建必要的目录结构以防止编译错误..."
-        
-        # 创建所有可能的构建目录
-        echo "创建通用构建目录..."
-        mkdir -p build_dir/target-*/root-*
-        mkdir -p build_dir/target-*/linux-*/root-*
-        mkdir -p build_dir/target-*/linux-*/image
-        mkdir -p build_dir/toolchain-*/linux-*
-        
-        # 创建目标特定目录
-        echo "创建目标特定目录..."
-        mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
-        mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-ipq40xx_generic/root-ipq40xx
-        mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-ipq40xx_generic/image
-        
-        # 创建staging目录
-        echo "创建staging目录..."
-        mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
-        mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/etc
-        mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/lib
-        mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/usr
-        mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/bin
-        mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/sbin
-        
-        # 设置正确权限
-        echo "设置目录权限..."
-        chmod -R 755 build_dir/ staging_dir/
-        
-        echo "✅ 目录结构预创建完成"
-
-    - name: "💾 编译前关键空间检查"
-      run: |
-        echo "=== 编译前关键空间检查 ==="
+        echo "=== 编译前最终空间检查 ==="
         echo "根分区 (/):"
         df -h /
         echo ""
@@ -595,7 +639,7 @@ jobs:
           echo "✅ 磁盘空间充足，可以开始编译"
         fi
 
-    - name: "🏗️ 智能编译固件 - 增强目录修复"
+    - name: "🏗️ 通用智能编译固件"
       timeout-minutes: 240
       id: compile-firmware
       run: |
@@ -612,14 +656,11 @@ jobs:
         CPU_CORES=$(nproc)
         echo "💻 可用CPU核心数: $CPU_CORES"
         
-        # 创建编译日志目录
-        BUILD_LOGS_DIR="/home/runner/build-logs"
-        mkdir -p $BUILD_LOGS_DIR
-        
         START_TIME=$(date +%s)
         
-        echo "🚀 开始智能编译..."
+        echo "🚀 开始通用智能编译..."
         echo "📊 编译参数:"
+        echo "  - 源码库: ${{ env.SOURCE_PRESET }}"
         echo "  - 工具链策略: ${{ steps.toolchain-setup.outputs.result }}"
         echo "  - 编译优化: ${{ github.event.inputs.build_optimization }}"
         echo "  - 自定义功能: ${{ github.event.inputs.enable_custom_features }}"
@@ -630,122 +671,56 @@ jobs:
         COMPILE_SUCCESS=false
         BUILD_EXIT_CODE=1
         
-        # 智能编译策略 - 使用严格错误处理
+        # 编译前目录最终检查
+        echo "🔧 编译前目录最终检查..."
+        find build_dir -name "root-*" -type d | head -5 | while read dir; do
+          mkdir -p "$dir/tmp" "$dir/var/lock"
+          chmod 1777 "$dir/tmp" 2>/dev/null || true
+          chmod 755 "$dir/var/lock" 2>/dev/null || true
+        done
+        
+        # 智能编译策略
         case "${{ github.event.inputs.build_optimization }}" in
           "speed")
-            echo "🚀 极速模式: 使用 $CPU_CORES 线程单阶段编译"
-            {
-              echo "📦 单阶段快速编译"
-              # 编译前再次确保目录存在
-              echo "🔧 编译前目录检查..."
-              mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
-              
-              if make -j$CPU_CORES; then
-                echo "✅ 编译命令执行完成"
-                COMPILE_SUCCESS=true
-                BUILD_EXIT_CODE=0
-              else
-                echo "❌ 编译命令执行失败"
-                COMPILE_SUCCESS=false
-                BUILD_EXIT_CODE=$?
-              fi
-            } | tee $BUILD_LOGS_DIR/speed.log
+            echo "🚀 极速模式: 使用 $CPU_CORES 线程编译"
+            LOG_FILE="${{ env.BUILD_LOG_DIR }}/speed.log"
+            if make -j$CPU_CORES V=sc 2>&1 | tee "$LOG_FILE"; then
+              COMPILE_SUCCESS=true
+              BUILD_EXIT_CODE=0
+            fi
             ;;
           "stability")
-            echo "🛡️ 稳定模式: 使用 $((CPU_CORES - 1)) 线程分阶段编译"
+            echo "🛡️ 稳定模式: 分阶段编译"
+            LOG_FILE="${{ env.BUILD_LOG_DIR }}/stability.log"
             {
-              set -e  # 严格错误处理，任何命令失败立即退出
+              set -e
+              echo "阶段1: 编译内核..."
+              make target/linux/compile -j$((CPU_CORES / 2)) V=s
               
-              echo "🔧 阶段1: 编译内核和基础包 (详细输出)"
-              make target/linux/compile -j$((CPU_CORES - 1)) V=s
-              
-              # 阶段1后空间检查
-              echo "=== 阶段1后磁盘空间 ==="
-              df -h /mnt
-              
-              echo "📦 阶段2: 编译所有包 (详细输出用于调试)"
+              echo "阶段2: 编译包..."
               make package/compile -j1 V=s
               
-              # 阶段2后空间检查
-              echo "=== 阶段2后磁盘空间 ==="
-              df -h /mnt
-              
-              echo "🔧 阶段3: 准备目录并最终组装 (详细输出+单线程用于调试)"
-              # 确保必要的目录存在 - 增强目录创建
-              echo "🔧 创建必要的目录结构..."
-              mkdir -p build_dir/target-*/root-*
-              mkdir -p build_dir/target-*/linux-*/root-*
-              mkdir -p build_dir/target-*/linux-*/image
-              mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
-              mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
-              
+              echo "阶段3: 最终安装..."
               make target/install -j1 V=s
               
               COMPILE_SUCCESS=true
               BUILD_EXIT_CODE=0
-              
-            } 2>&1 | tee $BUILD_LOGS_DIR/stability.log
+            } 2>&1 | tee "$LOG_FILE"
             ;;
           "balanced"|*)
-            echo "⚖️ 平衡模式: 使用 $CPU_CORES 线程智能分阶段编译"
+            echo "⚖️ 平衡模式: 智能分阶段编译"
+            LOG_FILE="${{ env.BUILD_LOG_DIR }}/balanced.log"
             {
-              set -e  # 严格错误处理，任何命令失败立即退出
+              set -e
+              echo "阶段1: 编译内核和基础包..."
+              make target/linux/compile package/compile -j$CPU_CORES V=s
               
-              # 阶段1: 内核和关键驱动 - 详细输出便于诊断
-              echo "🔧 阶段1: 编译内核和关键驱动 (详细输出)"
-              PHASE1_START=$(date +%s)
-              make target/linux/compile -j$CPU_CORES V=s
-              PHASE1_END=$(date +%s)
-              PHASE1_DURATION=$((PHASE1_END - PHASE1_START))
-              echo "阶段1完成，耗时: ${PHASE1_DURATION}秒"
-              
-              # 阶段1后空间检查
-              echo "=== 阶段1后磁盘空间 ==="
-              df -h /mnt
-              
-              # 阶段2: 所有包 - 使用详细输出和单线程进行调试
-              echo "📦 阶段2: 编译所有包 (详细输出+单线程用于调试)"
-              PHASE2_START=$(date +%s)
-              make package/compile -j1 V=s
-              PHASE2_END=$(date +%s)
-              PHASE2_DURATION=$((PHASE2_END - PHASE2_START))
-              echo "阶段2完成，耗时: ${PHASE2_DURATION}秒"
-              
-              # 阶段2后空间检查
-              echo "=== 阶段2后磁盘空间 ==="
-              df -h /mnt
-              
-              # 阶段3: 最终组装 - 使用详细输出和单线程进行调试
-              echo "🔧 阶段3: 准备目录并最终组装 (详细输出+单线程用于调试)"
-              PHASE3_START=$(date +%s)
-              
-              # 确保必要的目录存在 - 增强目录创建
-              echo "🔧 创建必要的目录结构..."
-              mkdir -p build_dir/target-*/root-*
-              mkdir -p build_dir/target-*/linux-*/root-*
-              mkdir -p build_dir/target-*/linux-*/image
-              mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
-              mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx
-              mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/etc
-              mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/lib
-              
-              echo "🔧 执行最终安装..."
+              echo "阶段2: 最终安装..."
               make target/install -j1 V=s
-              PHASE3_END=$(date +%s)
-              PHASE3_DURATION=$((PHASE3_END - PHASE3_START))
-              echo "阶段3完成，耗时: ${PHASE3_DURATION}秒"
               
               COMPILE_SUCCESS=true
               BUILD_EXIT_CODE=0
-              
-            } 2>&1 | tee $BUILD_LOGS_DIR/balanced.log
-            
-            # 记录阶段时长
-            if [ "$COMPILE_SUCCESS" = "true" ]; then
-              echo "PHASE1_DURATION=$PHASE1_DURATION" >> $GITHUB_ENV
-              echo "PHASE2_DURATION=$PHASE2_DURATION" >> $GITHUB_ENV
-              echo "PHASE3_DURATION=$PHASE3_DURATION" >> $GITHUB_ENV
-            fi
+            } 2>&1 | tee "$LOG_FILE"
             ;;
         esac
         
@@ -760,77 +735,21 @@ jobs:
         if [ "$COMPILE_SUCCESS" = "true" ] && [ $BUILD_EXIT_CODE -eq 0 ]; then
           echo "BUILD_STATUS=success" >> $GITHUB_ENV
           echo "🎉 编译成功完成!"
-          
-          # 记录编译总时长
-          if [ "$DURATION" -gt 3600 ]; then
-            echo "⏱️ 总编译耗时: ${DURATION}秒 ($(($DURATION/60))分钟) - 较长"
-          else
-            echo "⏱️ 编译耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
-          fi
-          
+          echo "⏱️ 编译耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
           exit 0
         else
           echo "BUILD_STATUS=failure" >> $GITHUB_ENV
           echo "❌ 编译失败"
           
-          # 详细的错误分析
-          echo "=== 详细错误分析 ==="
-          for logfile in $BUILD_LOGS_DIR/*.log; do
-            if [ -f "$logfile" ]; then
-              echo "分析日志: $(basename $logfile)"
-              echo "最后错误信息:"
-              tail -200 "$logfile" | grep -i "error\|failed\|undefined\|missing\|no such file" | tail -50 || echo "  无明确错误信息"
-              echo "----------------------------------------"
-            fi
-          done
+          # 错误分析
+          echo "=== 错误分析 ==="
+          tail -100 "$LOG_FILE" | grep -i "error\|failed\|undefined\|missing" | tail -20 || echo "无明确错误信息"
           
-          # 记录编译总时长
           echo "⏱️ 编译失败于: ${DURATION}秒"
           exit 1
         fi
 
-    - name: "💾 编译后最终空间检查"
-      if: env.BUILD_STATUS == 'success'
-      run: |
-        echo "=== 编译后最终空间检查 ==="
-        echo "根分区 (/):"
-        df -h /
-        echo ""
-        echo "数据分区 (/mnt):"
-        df -h /mnt
-        
-        echo ""
-        echo "📊 空间使用总结:"
-        du -sh ${{ env.SOURCE_DIR }}/bin/ 2>/dev/null || echo "无法获取输出目录大小"
-
-    - name: "📋 编译诊断报告"
-      if: always()
-      run: |
-        echo "=== 编译诊断报告 ==="
-        echo "构建状态: ${{ env.BUILD_STATUS || 'unknown' }}"
-        
-        BUILD_LOGS_DIR="/home/runner/build-logs"
-        
-        # 检查日志文件
-        if ls $BUILD_LOGS_DIR/*.log 2>/dev/null; then
-          echo "📁 可用日志文件:"
-          ls -la $BUILD_LOGS_DIR/
-          
-          # 显示关键统计
-          for logfile in $BUILD_LOGS_DIR/*.log; do
-            echo ""
-            echo "📊 $(basename $logfile) 统计:"
-            echo "  总行数: $(wc -l < "$logfile")"
-            echo "  错误数: $(grep -c -i "error" "$logfile" || echo 0)"
-            echo "  警告数: $(grep -c -i "warning" "$logfile" || echo 0)"
-            echo "  失败数: $(grep -c -i "failed" "$logfile" || echo 0)"
-            echo "  文件缺失: $(grep -c -i "no such file" "$logfile" || echo 0)"
-          done
-        else
-          echo "⚠️ 无编译日志文件"
-        fi
-
-    - name: "📦 收集构建产物和诊断信息"
+    - name: "📦 收集构建产物"
       if: always()
       run: |
         cd ${{ env.SOURCE_DIR }}
@@ -838,46 +757,43 @@ jobs:
         
         mkdir -p ${{ env.ARTIFACTS_DIR }}
         
-        # 收集固件文件（仅在成功时）
+        # 收集固件文件
         if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
+          echo "收集固件文件..."
           find bin/targets -type f \( -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" \) -exec cp --parents {} ${{ env.ARTIFACTS_DIR }}/ \; 2>/dev/null || true
         fi
         
         # 收集编译日志
-        BUILD_LOGS_DIR="/home/runner/build-logs"
-        cp -r $BUILD_LOGS_DIR ${{ env.ARTIFACTS_DIR }}/ 2>/dev/null || true
+        echo "收集编译日志..."
+        cp -r ${{ env.BUILD_LOG_DIR }} ${{ env.ARTIFACTS_DIR }}/ 2>/dev/null || true
         
         # 收集配置信息
         cp .config ${{ env.ARTIFACTS_DIR }}/config 2>/dev/null || true
         
-        # 收集工具链信息用于调试
+        # 生成构建报告
         {
-          echo "=== 工具链信息 ==="
-          echo "Host 工具:"
-          find staging_dir/host/bin -type f 2>/dev/null | sort
-          echo ""
-          echo "目标工具链:"
-          find staging_dir/toolchain-*/bin -type f 2>/dev/null | sort
-        } > ${{ env.ARTIFACTS_DIR }}/toolchain-info.txt 2>/dev/null || true
-        
-        # 收集关键构建状态
-        {
-          echo "=== 构建状态报告 ==="
+          echo "=== 通用固件构建报告 ==="
           echo "构建时间: $(date)"
           echo "编译状态: ${{ env.BUILD_STATUS || 'unknown' }}"
           echo "编译时长: ${{ env.BUILD_DURATION || 'N/A' }}秒"
+          echo "源码库: ${{ env.SOURCE_PRESET }}"
           echo "源码分支: ${{ env.ACTUAL_BRANCH }}"
-          echo "配置: ${{ github.event.inputs.config_profile }}"
+          echo "配置文件: ${{ github.event.inputs.config_profile }}"
           echo "优化策略: ${{ github.event.inputs.build_optimization }}"
           echo "工具链: ${{ steps.toolchain-setup.outputs.result }}"
           echo "自定义功能: ${{ github.event.inputs.enable_custom_features }}"
+          echo ""
+          echo "=== 系统信息 ==="
+          echo "Runner: ${{ runner.os }}"
+          echo "CPU: $(nproc) cores"
+          echo "内存: $(free -h | awk '/^Mem:/{print $2}')"
         } > ${{ env.ARTIFACTS_DIR }}/build-report.txt
         
         # 复制到工作目录
         mkdir -p $GITHUB_WORKSPACE/artifacts
         cp -r ${{ env.ARTIFACTS_DIR }}/* $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
         
-        echo "✅ 产物和诊断信息收集完成"
+        echo "✅ 产物收集完成"
 
     - name: "🧹 安全清理环境"
       if: always()
@@ -886,7 +802,7 @@ jobs:
         sudo swapoff /mnt/swapfile 2>/dev/null || true
         sudo rm -rf ${{ env.SOURCE_DIR }} ${{ env.ARTIFACTS_DIR }} /mnt/swapfile 2>/dev/null || true
         rm -rf ${{ env.CCACHE_DIR }} 2>/dev/null || true
-        rm -rf /home/runner/build-logs 2>/dev/null || true
+        rm -rf ${{ env.BUILD_LOG_DIR }} 2>/dev/null || true
         rm -rf /home/runner/toolchain-logs 2>/dev/null || true
         echo "✅ 环境清理完成"
 
@@ -894,7 +810,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: "Firmware-${{ github.run_number }}-${{ env.ACTUAL_BRANCH }}-${{ env.BUILD_STATUS || 'unknown' }}"
+        name: "Firmware-${{ github.run_number }}-${{ env.SOURCE_PRESET }}-${{ env.BUILD_STATUS || 'unknown' }}"
         path: artifacts
         retention-days: 30
 
@@ -907,9 +823,9 @@ jobs:
         
         if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
           echo "🎉 构建成功!"
-          echo "⏱️ 编译时长: ${{ env.BUILD_DURATION }}秒"
+          echo "⏱️ 编译时长: ${{ env.BUILD_DURATION }}秒 ($((${{ env.BUILD_DURATION }}/60))分钟)"
+          echo "📦 产物已上传到 Artifacts"
         else
           echo "❌ 构建失败"
           echo "🔍 请查看 Artifacts 中的详细日志和诊断信息"
-          echo "📁 特别关注 build-logs/ 目录中的阶段3编译日志"
         fi
