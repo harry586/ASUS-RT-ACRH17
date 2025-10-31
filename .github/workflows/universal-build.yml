@@ -64,36 +64,47 @@ jobs:
         with:
           path: firmware-config
 
-      - name: 💾 深度系统资源分析
-        timeout-minutes: 3
-        run: |
-          echo "=== 深度系统资源分析 ==="
-          echo "📊 磁盘空间详细分析:"
-          df -h
-          echo ""
-          echo "💻 CPU 架构信息:"
-          echo "核心数: $(nproc)"
-          echo "架构: $(uname -m)"
-          lscpu | grep -E "Architecture|Model name|CPU MHz|CPU max MHz" | head -5 || true
-          echo ""
-          echo "🧠 内存详细信息:"
-          free -h
-          echo "内存总量: $(grep MemTotal /proc/meminfo | awk '{print $2 $3}')"
-          echo "可用内存: $(grep MemAvailable /proc/meminfo | awk '{print $2 $3}')"
-          echo ""
-          echo "📁 关键目录空间使用 (快速扫描):"
-          {
-            echo "/tmp: $(du -sh /tmp 2>/dev/null | cut -f1 || echo 'N/A')"
-            echo "/home/runner: $(du -sh /home/runner 2>/dev/null | cut -f1 || echo 'N/A')" 
-            echo "/opt: $(du -sh /opt 2>/dev/null | cut -f1 || echo 'N/A')"
-            echo "/var: $(du -sh /var 2>/dev/null | cut -f1 || echo 'N/A')"
-            echo "/usr: $(du -sh /usr 2>/dev/null | cut -f1 || echo 'N/A')"
-          } | column -t
-          echo ""
-          echo "🔄 交换空间状态:"
-          swapon --show 2>/dev/null || echo "无交换空间或未启用"
-          echo ""
-          echo "✅ 系统资源分析完成"
+      - name: 💾 智能系统资源分析
+  timeout-minutes: 2
+  run: |
+    echo "=== 智能系统资源分析 ==="
+    echo "📊 磁盘空间:"
+    df -h | grep -E "Filesystem|/dev/root|/dev/sda"
+    echo ""
+    echo "💻 CPU 信息:"
+    echo "核心数: $(nproc)"
+    echo "架构: $(uname -m)"
+    echo "CPU 型号: $(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')"
+    echo ""
+    echo "🧠 内存信息:"
+    free -h
+    echo ""
+    echo "📁 目录空间估算:"
+    # 快速估算，不深入扫描
+    for dir in /tmp /home/runner /opt /var /usr; do
+      if [ -d "$dir" ]; then
+        size=$(timeout 2s du -s "$dir" 2>/dev/null | cut -f1 2>/dev/null || echo "未知")
+        if [ "$size" != "未知" ] && [ -n "$size" ]; then
+          # 将 KB 转换为 MB/GB
+          if [ "$size" -gt 1048576 ]; then
+            human_size=$(echo "scale=2; $size / 1048576" | bc)GB
+          elif [ "$size" -gt 1024 ]; then
+            human_size=$(echo "scale=2; $size / 1024" | bc)MB
+          else
+            human_size="${size}KB"
+          fi
+          echo "  $dir: ~$human_size"
+        else
+          echo "  $dir: 扫描跳过"
+        fi
+      else
+        echo "  $dir: 不存在"
+      fi
+    done
+    echo ""
+    echo "🔄 交换空间: $(swapon --show | wc -l 2>/dev/null || echo 0) 个交换文件"
+    echo ""
+    echo "✅ 资源分析完成 - 继续编译流程"
 
       - name: 🔧 全面工作环境设置
         run: |
