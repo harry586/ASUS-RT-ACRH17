@@ -308,7 +308,7 @@ jobs:
           echo "🎯 请求分支: $REQUESTED_BRANCH"
           echo "🎯 源码仓库: ${{ env.SOURCE_URL }}"
           
-          # 定义克隆策略 - 修复分支查找逻辑
+          # 定义克隆策略 - 修复分支查找逻辑，包括 main 和 master
           CLONE_STRATEGIES=(
             "指定分支: git clone --depth 1 --branch $REQUESTED_BRANCH ${{ env.SOURCE_URL }} ."
             "main分支: git clone --depth 1 --branch main ${{ env.SOURCE_URL }} ."
@@ -317,6 +317,8 @@ jobs:
           )
           
           CLONE_SUCCESS=false
+          CLONE_ERROR=""
+          
           for strategy in "${CLONE_STRATEGIES[@]}"; do
             strategy_name=$(echo "$strategy" | cut -d: -f1)
             clone_cmd=$(echo "$strategy" | cut -d: -f2-)
@@ -328,6 +330,7 @@ jobs:
             # 清理目录
             rm -rf .[!.]* * 2>/dev/null || true
             
+            # 执行克隆命令
             if eval $clone_cmd 2>&1 | tee /tmp/clone.log; then
               # 验证克隆是否真的成功
               if [ -d ".git" ]; then
@@ -337,9 +340,11 @@ jobs:
                 CLONE_SUCCESS=true
                 break
               else
+                CLONE_ERROR="Git目录未创建"
                 echo "⚠️ Git目录未创建，继续尝试其他策略..."
               fi
             else
+              CLONE_ERROR="克隆命令执行失败"
               echo "❌ 策略失败: $strategy_name"
               # 显示克隆错误详情
               if [ -f "/tmp/clone.log" ]; then
@@ -353,6 +358,7 @@ jobs:
             echo "❌ 所有克隆策略都失败"
             echo "🔍 最后尝试的克隆日志:"
             cat /tmp/clone.log 2>/dev/null || echo "无克隆日志"
+            echo "错误: $CLONE_ERROR"
             exit 1
           fi
           
@@ -452,23 +458,31 @@ jobs:
           CONFIG_FILE="${{ github.event.inputs.config_profile }}"
           echo "正在查找配置文件: $CONFIG_FILE"
           
-          # 智能查找配置文件 - 在所有可能的位置查找
+          # 智能查找配置文件 - 修复查找逻辑
           echo "🔍 智能查找配置文件..."
           
-          # 首先尝试直接使用输入的文件名
+          # 首先检查当前目录和上级目录
+          echo "📁 检查当前目录结构:"
+          pwd
+          ls -la
+          echo ""
+          echo "📁 检查上级目录结构:"
+          ls -la ../
+          
+          # 定义所有可能的查找路径
           CONFIG_PATHS=(
             "../$CONFIG_FILE"
             "../../$CONFIG_FILE"
+            "$GITHUB_WORKSPACE/$CONFIG_FILE"
             "$CONFIG_FILE"
           )
-          
-          # 然后尝试查找所有 .config_* 文件
-          ALL_CONFIG_FILES=$(find .. -name ".config_*" -type f 2>/dev/null)
           
           CONFIG_FOUND=""
           
           # 首先尝试精确匹配输入的文件名
+          echo "🔍 尝试精确匹配..."
           for path in "${CONFIG_PATHS[@]}"; do
+            echo "检查路径: $path"
             if [ -f "$path" ]; then
               CONFIG_FOUND="$path"
               echo "✅ 找到配置文件: $path"
@@ -476,24 +490,29 @@ jobs:
             fi
           done
           
-          # 如果没有找到，尝试在所有 .config_* 文件中查找匹配的
-          if [ -z "$CONFIG_FOUND" ] && [ -n "$ALL_CONFIG_FILES" ]; then
-            echo "🔍 在所有配置文件中查找匹配项..."
-            # 提取文件名（不含路径）
-            CONFIG_BASENAME=$(basename "$CONFIG_FILE")
-            MATCHED_FILE=$(echo "$ALL_CONFIG_FILES" | grep -F "$CONFIG_BASENAME" | head -1)
+          # 如果没有找到，尝试在所有位置查找任何 .config_* 文件
+          if [ -z "$CONFIG_FOUND" ]; then
+            echo "🔍 未找到精确匹配，搜索所有 .config_* 文件..."
+            ALL_CONFIG_FILES=$(find $GITHUB_WORKSPACE .. -name ".config_*" -type f 2>/dev/null | head -10)
             
-            if [ -n "$MATCHED_FILE" ]; then
-              CONFIG_FOUND="$MATCHED_FILE"
-              echo "✅ 找到匹配的配置文件: $MATCHED_FILE"
+            if [ -n "$ALL_CONFIG_FILES" ]; then
+              echo "找到以下配置文件:"
+              echo "$ALL_CONFIG_FILES"
+              
+              # 尝试匹配文件名
+              CONFIG_BASENAME=$(basename "$CONFIG_FILE")
+              MATCHED_FILE=$(echo "$ALL_CONFIG_FILES" | grep -F "$CONFIG_BASENAME" | head -1)
+              
+              if [ -n "$MATCHED_FILE" ]; then
+                CONFIG_FOUND="$MATCHED_FILE"
+                echo "✅ 找到匹配的配置文件: $MATCHED_FILE"
+              else
+                # 使用第一个找到的配置文件
+                FIRST_CONFIG=$(echo "$ALL_CONFIG_FILES" | head -1)
+                CONFIG_FOUND="$FIRST_CONFIG"
+                echo "⚠️ 使用第一个可用的配置文件: $FIRST_CONFIG"
+              fi
             fi
-          fi
-          
-          # 如果还没有找到，显示第一个可用的配置文件
-          if [ -z "$CONFIG_FOUND" ] && [ -n "$ALL_CONFIG_FILES" ]; then
-            FIRST_CONFIG=$(echo "$ALL_CONFIG_FILES" | head -1)
-            CONFIG_FOUND="$FIRST_CONFIG"
-            echo "⚠️ 使用第一个可用的配置文件: $FIRST_CONFIG"
           fi
           
           if [ -z "$CONFIG_FOUND" ]; then
@@ -501,22 +520,23 @@ jobs:
             echo ""
             echo "当前工作目录: $(pwd)"
             echo ""
-            echo "目录结构详情:"
-            echo "当前目录:"
-            ls -la
+            echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
             echo ""
-            echo "上级目录:"
-            ls -la ../
+            echo "所有可能的查找路径:"
+            for path in "${CONFIG_PATHS[@]}"; do
+              echo "  $path"
+            done
             echo ""
-            echo "所有可用的配置文件:"
-            find .. -name ".config_*" -type f 2>/dev/null || echo "无 .config_* 文件"
+            echo "所有 .config_* 文件:"
+            find $GITHUB_WORKSPACE .. -name ".config_*" -type f 2>/dev/null || echo "无 .config_* 文件"
             echo ""
             echo "所有文件 (前30个):"
-            find .. -type f | head -30
+            find $GITHUB_WORKSPACE .. -type f | head -30
             exit 1
           fi
           
           # 应用配置
+          echo "📋 复制配置文件: $CONFIG_FOUND -> .config"
           cp "$CONFIG_FOUND" .config
           echo "✅ 配置应用完成: $(basename $CONFIG_FOUND)"
           
