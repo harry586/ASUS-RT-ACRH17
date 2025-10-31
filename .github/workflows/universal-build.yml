@@ -194,24 +194,27 @@ jobs:
           echo "=== 智能文件发现 ==="
           echo "🔍 分析仓库结构..."
           
+          # 修复find命令的管道问题
+          set +o pipefail
+          
           # 查找 repositories.json
           echo ""
           echo "📋 查找 repositories.json 文件..."
-          REPO_JSON_FOUND=$(find . -name "repositories.json" -type f 2>/dev/null | head -1)
+          REPO_JSON_FOUND=$(find . -name "repositories.json" -type f 2>/dev/null | head -1 || true)
           if [ -n "$REPO_JSON_FOUND" ]; then
             echo "✅ 找到 repositories.json: $REPO_JSON_FOUND"
             echo "REPO_JSON_PATH=$REPO_JSON_FOUND" >> $GITHUB_ENV
           else
             echo "❌ 未找到 repositories.json 文件"
             echo "当前目录结构:"
-            find . -type f -name "*.json" | head -10 || echo "无JSON文件"
+            find . -type f -name "*.json" 2>/dev/null | head -10 || echo "无JSON文件"
             exit 1
           fi
           
           # 查找所有可能的配置文件
           echo ""
           echo "📋 查找所有配置文件..."
-          CONFIG_FILES=$(find . -name ".config_*" -type f 2>/dev/null)
+          CONFIG_FILES=$(find . -name ".config_*" -type f 2>/dev/null || true)
           if [ -n "$CONFIG_FILES" ]; then
             echo "✅ 找到以下配置文件:"
             echo "$CONFIG_FILES"
@@ -224,7 +227,7 @@ jobs:
           # 查找自定义功能目录
           echo ""
           echo "📋 查找自定义功能目录..."
-          CUSTOM_FEATURES_DIR=$(find . -type d -name "custom-features" 2>/dev/null | head -1)
+          CUSTOM_FEATURES_DIR=$(find . -type d -name "custom-features" 2>/dev/null | head -1 || true)
           if [ -n "$CUSTOM_FEATURES_DIR" ]; then
             echo "✅ 找到自定义功能目录: $CUSTOM_FEATURES_DIR"
             echo "CUSTOM_FEATURES_DIR=$CUSTOM_FEATURES_DIR" >> $GITHUB_ENV
@@ -235,7 +238,9 @@ jobs:
           
           echo ""
           echo "📁 完整目录结构 (前20个文件):"
-          find . -type f | head -20
+          find . -type f 2>/dev/null | head -20 || echo "目录结构显示完成"
+          
+          set -o pipefail
 
       - name: 🔧 智能源码配置解析
         id: source-config
@@ -554,7 +559,7 @@ jobs:
           # 如果没有找到，尝试在所有位置查找任何 .config_* 文件
           if [ -z "$CONFIG_FOUND" ]; then
             echo "🔍 未找到精确匹配，搜索所有 .config_* 文件..."
-            ALL_CONFIG_FILES=$(find $GITHUB_WORKSPACE .. -name ".config_*" -type f 2>/dev/null | head -10)
+            ALL_CONFIG_FILES=$(find $GITHUB_WORKSPACE .. -name ".config_*" -type f 2>/dev/null | head -10 || true)
             
             if [ -n "$ALL_CONFIG_FILES" ]; then
               echo "找到以下配置文件:"
@@ -562,7 +567,7 @@ jobs:
               
               # 尝试匹配文件名
               CONFIG_BASENAME=$(basename "$CONFIG_FILE")
-              MATCHED_FILE=$(echo "$ALL_CONFIG_FILES" | grep -F "$CONFIG_BASENAME" | head -1)
+              MATCHED_FILE=$(echo "$ALL_CONFIG_FILES" | grep -F "$CONFIG_BASENAME" | head -1 || true)
               
               if [ -n "$MATCHED_FILE" ]; then
                 CONFIG_FOUND="$MATCHED_FILE"
@@ -592,7 +597,7 @@ jobs:
             find $GITHUB_WORKSPACE .. -name ".config_*" -type f 2>/dev/null || echo "无 .config_* 文件"
             echo ""
             echo "所有文件 (前30个):"
-            find $GITHUB_WORKSPACE .. -type f | head -30
+            find $GITHUB_WORKSPACE .. -type f 2>/dev/null | head -30 || echo "无文件"
             exit 1
           fi
           
@@ -649,9 +654,9 @@ jobs:
               ;;
           esac
           
-          # 自动处理配置
+          # 修复yes命令的管道问题
           echo "🔄 运行配置处理..."
-          yes "" | make oldconfig >/dev/null 2>&1 || echo "配置处理完成"
+          { yes "" || true; } | make oldconfig >/dev/null 2>&1 || echo "配置处理完成"
           
           echo "✅ 性能优化配置完成"
 
@@ -665,7 +670,7 @@ jobs:
           
           # 清理旧工具链
           echo "🧹 清理旧工具链..."
-          rm -rf staging_dir/toolchain-* build_dir/toolchain-*
+          rm -rf staging_dir/toolchain-* build_dir/toolchain-* 2>/dev/null || true
           
           # Host工具编译
           echo "🔧 编译Host工具..."
@@ -711,7 +716,7 @@ jobs:
           
           # 目录结构验证
           echo "📁 工具链目录结构:"
-          find staging_dir/ -type d -maxdepth 2 | sort
+          find staging_dir/ -type d -maxdepth 2 2>/dev/null | sort || echo "无法访问staging_dir"
           
           # Host工具详细验证
           echo ""
@@ -759,7 +764,7 @@ jobs:
           echo "🔍 工具链完整性检查..."
           TOOLCHAIN_BIN_DIR=$(dirname "$TARGET_GCC" 2>/dev/null)
           if [ -n "$TOOLCHAIN_BIN_DIR" ] && [ -d "$TOOLCHAIN_BIN_DIR" ]; then
-            TOOL_COUNT=$(ls "$TOOLCHAIN_BIN_DIR" | wc -l)
+            TOOL_COUNT=$(ls "$TOOLCHAIN_BIN_DIR" 2>/dev/null | wc -l || echo 0)
             echo "工具链工具数量: $TOOL_COUNT"
             if [ "$TOOL_COUNT" -lt 10 ]; then
               echo "⚠️ 工具链工具数量过少，可能不完整"
@@ -783,17 +788,17 @@ jobs:
             IPK_DIR="$CUSTOM_FEATURES_DIR/prebuilt-ipks"
             if [ -d "$IPK_DIR" ]; then
               echo "📦 处理预编译IPK包..."
-              IPK_COUNT=$(find "$IPK_DIR" -name "*.ipk" -type f | wc -l)
+              IPK_COUNT=$(find "$IPK_DIR" -name "*.ipk" -type f 2>/dev/null | wc -l)
               if [ "$IPK_COUNT" -gt 0 ]; then
                 mkdir -p package/base-files/files/usr/lib/opkg/custom
-                find "$IPK_DIR" -name "*.ipk" -exec cp {} package/base-files/files/usr/lib/opkg/custom/ \;
+                find "$IPK_DIR" -name "*.ipk" -exec cp {} package/base-files/files/usr/lib/opkg/custom/ \; 2>/dev/null || true
                 echo "✅ 已复制 $IPK_COUNT 个IPK包"
                 
                 # 验证IPK包
                 echo "🔍 验证IPK包..."
                 for ipk in package/base-files/files/usr/lib/opkg/custom/*.ipk; do
                   if [ -f "$ipk" ]; then
-                    ipk_size=$(stat -c%s "$ipk")
+                    ipk_size=$(stat -c%s "$ipk" 2>/dev/null || echo 0)
                     if [ "$ipk_size" -gt 1000 ]; then
                       echo "✅ $(basename $ipk): 有效 ($ipk_size 字节)"
                     else
@@ -812,9 +817,9 @@ jobs:
             SCRIPTS_DIR="$CUSTOM_FEATURES_DIR/scripts"
             if [ -d "$SCRIPTS_DIR" ]; then
               echo "📜 处理自定义脚本..."
-              SCRIPT_COUNT=$(find "$SCRIPTS_DIR" -name "*.sh" -type f | wc -l)
+              SCRIPT_COUNT=$(find "$SCRIPTS_DIR" -name "*.sh" -type f 2>/dev/null | wc -l)
               if [ "$SCRIPT_COUNT" -gt 0 ]; then
-                for script in $(find "$SCRIPTS_DIR" -name "*.sh" -type f | sort); do
+                for script in $(find "$SCRIPTS_DIR" -name "*.sh" -type f 2>/dev/null | sort); do
                   echo "▶️ 执行脚本: $(basename $script)"
                   chmod +x "$script"
                   if timeout 600 bash "$script"; then
@@ -842,15 +847,22 @@ jobs:
           
           # 检测目标架构
           echo "🔍 检测目标架构..."
-          TARGET_PATTERN=$(grep "CONFIG_TARGET_ARCH_PACKAGES" .config | cut -d= -f2 | tr -d '"' | cut -d_ -f1)
+          TARGET_PATTERN=$(grep "CONFIG_TARGET_ARCH_PACKAGES" .config 2>/dev/null | cut -d= -f2 | tr -d '"' | cut -d_ -f1 || echo "unknown")
           echo "检测到架构模式: $TARGET_PATTERN"
           
-          # 创建通用目录结构
+          # 创建通用目录结构 - 修复目录创建问题
           echo "📁 创建通用目录结构..."
-          mkdir -p build_dir/target-*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock}
-          mkdir -p build_dir/target-*/root.orig-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock}
-          mkdir -p build_dir/target-*/linux-*/{root-*,image}
-          mkdir -p staging_dir/target-*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock}
+          mkdir -p build_dir/target-*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+          mkdir -p build_dir/target-*/root.orig-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+          mkdir -p build_dir/target-*/linux-*/{root-*,image} 2>/dev/null || true
+          mkdir -p staging_dir/target-*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+          
+          # 创建特定架构目录 - 根据检测到的架构创建
+          if [ "$TARGET_PATTERN" != "unknown" ]; then
+            echo "📁 创建 $TARGET_PATTERN 架构特定目录..."
+            mkdir -p build_dir/target-${TARGET_PATTERN}_*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+            mkdir -p staging_dir/target-${TARGET_PATTERN}_*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+          fi
           
           # 设置权限
           echo "🔒 设置目录权限..."
@@ -860,8 +872,14 @@ jobs:
           
           # 验证目录创建
           echo "🔍 验证目录创建..."
-          DIR_COUNT=$(find build_dir staging_dir -type d | wc -l)
+          DIR_COUNT=$(find build_dir staging_dir -type d 2>/dev/null | wc -l || echo 0)
           echo "创建的目录数量: $DIR_COUNT"
+          
+          # 创建编译过程中需要的特定目录
+          echo "📁 创建编译过程特定目录..."
+          mkdir -p build_dir/target-*/root-*/{etc/init.d,usr/lib,usr/bin,usr/sbin,lib/modules} 2>/dev/null || true
+          mkdir -p build_dir/target-*/root.orig-*/{etc/init.d,usr/lib,usr/bin,usr/sbin,lib/modules} 2>/dev/null || true
+          
           echo "✅ 目录结构预创建完成"
 
       - name: 💾 编译前最终空间监测与清理
@@ -935,13 +953,16 @@ jobs:
           COMPILE_SUCCESS=false
           BUILD_EXIT_CODE=1
           
-          # 智能编译策略
+          # 改进的编译策略 - 修复目录创建问题
           case "${{ github.event.inputs.build_optimization }}" in
             "speed")
               echo "🚀 执行极速编译模式..."
               LOG_FILE="${{ env.BUILD_LOG_DIR }}/speed-compile.log"
               {
-                echo "阶段1: 全核心编译..."
+                echo "阶段1: 预创建所有必要目录..."
+                find . -name "Makefile" -exec dirname {} \; | xargs -I {} mkdir -p {}/tmp 2>/dev/null || true
+                
+                echo "阶段2: 全核心编译..."
                 if make -j$CPU_CORES V=s; then
                   COMPILE_SUCCESS=true
                   BUILD_EXIT_CODE=0
@@ -953,41 +974,34 @@ jobs:
               LOG_FILE="${{ env.BUILD_LOG_DIR }}/stability-compile.log"
               {
                 set -e
-                echo "阶段1: 编译内核..."
+                echo "阶段1: 预创建目录结构..."
+                make tools/install 2>/dev/null || true
+                make toolchain/install 2>/dev/null || true
+                
+                echo "阶段2: 编译内核..."
                 make target/linux/compile -j$((CPU_CORES / 2)) V=s
-                echo "阶段2: 编译软件包..."
+                echo "阶段3: 编译软件包..."
                 make package/compile -j1 V=s
-                echo "阶段3: 最终组装..."
+                echo "阶段4: 最终组装..."
                 make target/install -j1 V=s
                 COMPILE_SUCCESS=true
                 BUILD_EXIT_CODE=0
               } 2>&1 | tee "$LOG_FILE"
               ;;
-            "balanced")
+            "balanced"|*)
               echo "⚖️ 执行平衡编译模式..."
               LOG_FILE="${{ env.BUILD_LOG_DIR }}/balanced-compile.log"
               {
                 set -e
-                echo "阶段1: 编译内核和基础包..."
+                echo "阶段1: 预编译和目录准备..."
+                make tools/install 2>/dev/null || true
+                make toolchain/install 2>/dev/null || true
+                
+                echo "阶段2: 编译内核和基础包..."
                 make target/linux/compile -j$CPU_CORES V=s
-                echo "阶段2: 编译所有软件包..."
+                echo "阶段3: 编译所有软件包..."
                 make package/compile -j$((CPU_CORES / 2)) V=s
-                echo "阶段3: 最终安装..."
-                make target/install -j1 V=s
-                COMPILE_SUCCESS=true
-                BUILD_EXIT_CODE=0
-              } 2>&1 | tee "$LOG_FILE"
-              ;;
-            *)
-              echo "⚖️ 执行默认编译模式..."
-              LOG_FILE="${{ env.BUILD_LOG_DIR }}/default-compile.log"
-              {
-                set -e
-                echo "阶段1: 编译内核和基础包..."
-                make target/linux/compile -j$CPU_CORES V=s
-                echo "阶段2: 编译所有软件包..."
-                make package/compile -j$((CPU_CORES / 2)) V=s
-                echo "阶段3: 最终安装..."
+                echo "阶段4: 最终安装..."
                 make target/install -j1 V=s
                 COMPILE_SUCCESS=true
                 BUILD_EXIT_CODE=0
@@ -1014,7 +1028,26 @@ jobs:
             
             # 错误分析
             echo "=== 详细错误分析 ==="
-            tail -200 "$LOG_FILE" | grep -i "error\|failed\|undefined\|missing\|no such file" | tail -50 || echo "无明确错误信息"
+            if [ -f "$LOG_FILE" ]; then
+              tail -200 "$LOG_FILE" | grep -i "error\|failed\|undefined\|missing\|no such file\|cannot create" | tail -50 || echo "无明确错误信息"
+              
+              # 检查特定的目录错误
+              if grep -q "cannot create.*No such file or directory" "$LOG_FILE"; then
+                echo ""
+                echo "🔧 检测到目录创建错误，尝试修复..."
+                # 提取缺失的目录路径并创建
+                grep "cannot create.*No such file or directory" "$LOG_FILE" | head -5 | while read -r line; do
+                  missing_dir=$(echo "$line" | sed -n 's/.*cannot create regular file '\''\([^']*\)'\''.*/\1/p' | xargs dirname 2>/dev/null)
+                  if [ -n "$missing_dir" ]; then
+                    echo "创建缺失目录: $missing_dir"
+                    mkdir -p "$missing_dir" 2>/dev/null || true
+                  fi
+                done
+                echo "✅ 目录修复完成"
+              fi
+            else
+              echo "无编译日志文件"
+            fi
             
             echo "⏱️ 编译失败于: ${DURATION}秒"
             exit 1
@@ -1074,7 +1107,7 @@ jobs:
             if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
               echo "固件文件:"
               find ${{ env.ARTIFACTS_DIR }} -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" 2>/dev/null | \
-                xargs -I {} basename {} | sort || echo "无固件文件"
+                xargs -I {} basename {} 2>/dev/null | sort || echo "无固件文件"
             else
               echo "构建失败，无固件产物"
             fi
