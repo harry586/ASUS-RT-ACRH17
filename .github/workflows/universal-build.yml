@@ -224,13 +224,30 @@ jobs:
             echo "CONFIG_FILES_FOUND=false" >> $GITHUB_ENV
           fi
           
-          # 查找自定义功能目录
+          # 修复自定义功能目录查找 - 根据您的目录结构
           echo ""
           echo "📋 查找自定义功能目录..."
-          CUSTOM_FEATURES_DIR=$(find . -type d -name "custom-features" 2>/dev/null | head -1 || true)
+          # 查找 firmware-config/custom-features 目录
+          CUSTOM_FEATURES_DIR=$(find . -type d -path "*/firmware-config/custom-features" 2>/dev/null | head -1 || true)
           if [ -n "$CUSTOM_FEATURES_DIR" ]; then
             echo "✅ 找到自定义功能目录: $CUSTOM_FEATURES_DIR"
             echo "CUSTOM_FEATURES_DIR=$CUSTOM_FEATURES_DIR" >> $GITHUB_ENV
+            
+            # 检查IPK和脚本目录
+            echo "🔍 检查自定义功能子目录..."
+            if [ -d "$CUSTOM_FEATURES_DIR/prebuilt-ipks" ]; then
+              IPK_COUNT=$(find "$CUSTOM_FEATURES_DIR/prebuilt-ipks" -name "*.ipk" -type f 2>/dev/null | wc -l)
+              echo "✅ 找到IPK目录，包含 $IPK_COUNT 个IPK文件"
+            else
+              echo "⚠️ 未找到 prebuilt-ipks 目录"
+            fi
+            
+            if [ -d "$CUSTOM_FEATURES_DIR/scripts" ]; then
+              SCRIPT_COUNT=$(find "$CUSTOM_FEATURES_DIR/scripts" -name "*.sh" -type f 2>/dev/null | wc -l)
+              echo "✅ 找到脚本目录，包含 $SCRIPT_COUNT 个脚本文件"
+            else
+              echo "⚠️ 未找到 scripts 目录"
+            fi
           else
             echo "ℹ️ 未找到自定义功能目录"
             echo "CUSTOM_FEATURES_DIR=" >> $GITHUB_ENV
@@ -541,6 +558,8 @@ jobs:
             "../../$CONFIG_FILE"
             "$GITHUB_WORKSPACE/$CONFIG_FILE"
             "$CONFIG_FILE"
+            "../firmware-config/configs/$CONFIG_FILE"
+            "$GITHUB_WORKSPACE/firmware-config/configs/$CONFIG_FILE"
           )
           
           CONFIG_FOUND=""
@@ -654,9 +673,9 @@ jobs:
               ;;
           esac
           
-          # 修复yes命令的管道问题
+          # 修复yes命令的管道问题 - 使用更安全的方法
           echo "🔄 运行配置处理..."
-          { yes "" || true; } | make oldconfig >/dev/null 2>&1 || echo "配置处理完成"
+          echo "n" | make oldconfig >/dev/null 2>&1 || echo "配置处理完成"
           
           echo "✅ 性能优化配置完成"
 
@@ -784,15 +803,27 @@ jobs:
           if [ -n "$CUSTOM_FEATURES_DIR" ]; then
             echo "🔍 使用找到的自定义功能目录: $CUSTOM_FEATURES_DIR"
             
-            # 预编译IPK包处理
+            # 预编译IPK包处理 - 修复路径问题
             IPK_DIR="$CUSTOM_FEATURES_DIR/prebuilt-ipks"
             if [ -d "$IPK_DIR" ]; then
               echo "📦 处理预编译IPK包..."
-              IPK_COUNT=$(find "$IPK_DIR" -name "*.ipk" -type f 2>/dev/null | wc -l)
+              IPK_FILES=$(find "$IPK_DIR" -name "*.ipk" -type f 2>/dev/null)
+              IPK_COUNT=$(echo "$IPK_FILES" | wc -l)
+              
               if [ "$IPK_COUNT" -gt 0 ]; then
+                echo "✅ 找到 $IPK_COUNT 个IPK文件:"
+                echo "$IPK_FILES"
+                
+                # 创建目标目录
                 mkdir -p package/base-files/files/usr/lib/opkg/custom
-                find "$IPK_DIR" -name "*.ipk" -exec cp {} package/base-files/files/usr/lib/opkg/custom/ \; 2>/dev/null || true
-                echo "✅ 已复制 $IPK_COUNT 个IPK包"
+                
+                # 复制IPK文件
+                for ipk in $IPK_FILES; do
+                  if [ -f "$ipk" ]; then
+                    cp "$ipk" package/base-files/files/usr/lib/opkg/custom/
+                    echo "✅ 已复制: $(basename $ipk)"
+                  fi
+                done
                 
                 # 验证IPK包
                 echo "🔍 验证IPK包..."
@@ -810,29 +841,46 @@ jobs:
                 echo "ℹ️ IPK包目录为空"
               fi
             else
-              echo "ℹ️ 无IPK包目录"
+              echo "ℹ️ 无IPK包目录: $IPK_DIR"
             fi
             
-            # 自定义脚本处理
+            # 自定义脚本处理 - 修复路径问题
             SCRIPTS_DIR="$CUSTOM_FEATURES_DIR/scripts"
             if [ -d "$SCRIPTS_DIR" ]; then
               echo "📜 处理自定义脚本..."
-              SCRIPT_COUNT=$(find "$SCRIPTS_DIR" -name "*.sh" -type f 2>/dev/null | wc -l)
+              SCRIPT_FILES=$(find "$SCRIPTS_DIR" -name "*.sh" -type f 2>/dev/null)
+              SCRIPT_COUNT=$(echo "$SCRIPT_FILES" | wc -l)
+              
               if [ "$SCRIPT_COUNT" -gt 0 ]; then
-                for script in $(find "$SCRIPTS_DIR" -name "*.sh" -type f 2>/dev/null | sort); do
-                  echo "▶️ 执行脚本: $(basename $script)"
-                  chmod +x "$script"
-                  if timeout 600 bash "$script"; then
-                    echo "✅ 脚本执行成功: $(basename $script)"
-                  else
-                    echo "⚠️ 脚本执行失败或超时: $(basename $script)"
+                echo "✅ 找到 $SCRIPT_COUNT 个脚本文件:"
+                echo "$SCRIPT_FILES"
+                
+                for script in $SCRIPT_FILES; do
+                  if [ -f "$script" ]; then
+                    echo "▶️ 执行脚本: $(basename $script)"
+                    chmod +x "$script"
+                    # 设置环境变量让脚本知道源码目录
+                    export SOURCE_DIR="${{ env.SOURCE_DIR }}"
+                    export BUILD_DIR="${{ env.SOURCE_DIR }}/build_dir"
+                    export STAGING_DIR="${{ env.SOURCE_DIR }}/staging_dir"
+                    
+                    if timeout 600 bash "$script"; then
+                      echo "✅ 脚本执行成功: $(basename $script)"
+                    else
+                      EXIT_CODE=$?
+                      if [ $EXIT_CODE -eq 124 ]; then
+                        echo "⏰ 脚本执行超时: $(basename $script)"
+                      else
+                        echo "⚠️ 脚本执行失败: $(basename $script) (退出码: $EXIT_CODE)"
+                      fi
+                    fi
                   fi
                 done
               else
                 echo "ℹ️ 无脚本文件"
               fi
             else
-              echo "ℹ️ 无脚本目录"
+              echo "ℹ️ 无脚本目录: $SCRIPTS_DIR"
             fi
           else
             echo "ℹ️ 无自定义功能目录，跳过自定义功能处理"
@@ -848,7 +896,8 @@ jobs:
           # 检测目标架构
           echo "🔍 检测目标架构..."
           TARGET_PATTERN=$(grep "CONFIG_TARGET_ARCH_PACKAGES" .config 2>/dev/null | cut -d= -f2 | tr -d '"' | cut -d_ -f1 || echo "unknown")
-          echo "检测到架构模式: $TARGET_PATTERN"
+          TARGET_SUBTARGET=$(grep "CONFIG_TARGET_SUBTARGET" .config 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "generic")
+          echo "检测到架构模式: $TARGET_PATTERN, 子目标: $TARGET_SUBTARGET"
           
           # 创建通用目录结构 - 修复目录创建问题
           echo "📁 创建通用目录结构..."
@@ -857,11 +906,23 @@ jobs:
           mkdir -p build_dir/target-*/linux-*/{root-*,image} 2>/dev/null || true
           mkdir -p staging_dir/target-*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
           
+          # 根据错误信息创建特定目录 - 修复编译错误中的目录
+          echo "📁 创建编译所需特定目录..."
+          mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock,init} 2>/dev/null || true
+          mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-ipq40xx_generic/linux-5.4.255/.image 2>/dev/null || true
+          
           # 创建特定架构目录 - 根据检测到的架构创建
           if [ "$TARGET_PATTERN" != "unknown" ]; then
             echo "📁 创建 $TARGET_PATTERN 架构特定目录..."
-            mkdir -p build_dir/target-${TARGET_PATTERN}_*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+            mkdir -p build_dir/target-${TARGET_PATTERN}_*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock,init} 2>/dev/null || true
             mkdir -p staging_dir/target-${TARGET_PATTERN}_*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+            
+            # 为特定子目标创建目录
+            if [ "$TARGET_SUBTARGET" != "generic" ]; then
+              echo "📁 创建 $TARGET_SUBTARGET 子目标目录..."
+              mkdir -p build_dir/target-${TARGET_PATTERN}_*/root-${TARGET_SUBTARGET}/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock,init} 2>/dev/null || true
+              mkdir -p build_dir/target-${TARGET_PATTERN}_*/linux-${TARGET_SUBTARGET}_* 2>/dev/null || true
+            fi
           fi
           
           # 设置权限
@@ -870,15 +931,31 @@ jobs:
           find build_dir staging_dir -name "lock" -type d -exec chmod 755 {} \; 2>/dev/null || true
           find build_dir staging_dir -type d -exec chmod 755 {} \; 2>/dev/null || true
           
+          # 创建编译过程中需要的特定目录
+          echo "📁 创建编译过程特定目录..."
+          mkdir -p build_dir/target-*/root-*/{etc/init.d,usr/lib,usr/bin,usr/sbin,lib/modules,init} 2>/dev/null || true
+          mkdir -p build_dir/target-*/root.orig-*/{etc/init.d,usr/lib,usr/bin,usr/sbin,lib/modules,init} 2>/dev/null || true
+          
           # 验证目录创建
           echo "🔍 验证目录创建..."
           DIR_COUNT=$(find build_dir staging_dir -type d 2>/dev/null | wc -l || echo 0)
           echo "创建的目录数量: $DIR_COUNT"
           
-          # 创建编译过程中需要的特定目录
-          echo "📁 创建编译过程特定目录..."
-          mkdir -p build_dir/target-*/root-*/{etc/init.d,usr/lib,usr/bin,usr/sbin,lib/modules} 2>/dev/null || true
-          mkdir -p build_dir/target-*/root.orig-*/{etc/init.d,usr/lib,usr/bin,usr/sbin,lib/modules} 2>/dev/null || true
+          # 特别验证错误中提到的目录
+          CRITICAL_DIRS=(
+            "build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/init"
+            "build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-ipq40xx_generic/linux-5.4.255/.image"
+          )
+          
+          for dir in "${CRITICAL_DIRS[@]}"; do
+            if [ -d "$dir" ]; then
+              echo "✅ 关键目录存在: $dir"
+            else
+              echo "⚠️ 关键目录缺失: $dir"
+              # 尝试创建缺失的关键目录
+              mkdir -p "$dir" 2>/dev/null && echo "✅ 已创建缺失目录: $dir" || echo "❌ 无法创建目录: $dir"
+            fi
+          done
           
           echo "✅ 目录结构预创建完成"
 
@@ -914,7 +991,7 @@ jobs:
           if [ "$MNT_AVAILABLE" -lt 10 ]; then
             echo "🚨 严重错误: /mnt 分区空间不足10GB，无法编译"
             exit 1
-          elif [ "$MNT_AVAILABLE" -lt 20 ]; then
+          elif [ "$MNT_AVATAINABLE" -lt 20 ]; then
             echo "⚠️ 警告: /mnt 分区空间紧张 (${MNT_AVAILABLE}GB)"
           else
             echo "✅ /mnt 分区空间充足"
@@ -960,6 +1037,7 @@ jobs:
               LOG_FILE="${{ env.BUILD_LOG_DIR }}/speed-compile.log"
               {
                 echo "阶段1: 预创建所有必要目录..."
+                # 动态创建编译过程中需要的目录
                 find . -name "Makefile" -exec dirname {} \; | xargs -I {} mkdir -p {}/tmp 2>/dev/null || true
                 
                 echo "阶段2: 全核心编译..."
