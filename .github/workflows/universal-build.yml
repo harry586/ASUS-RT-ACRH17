@@ -48,11 +48,11 @@ on:
 
 env:
   TZ: Asia/Shanghai
-  SOURCE_DIR: /tmp/source
-  ARTIFACTS_DIR: /tmp/artifacts
-  CCACHE_DIR: /tmp/ccache
-  BUILD_LOG_DIR: /tmp/build-logs
-  TOOLCHAIN_LOG_DIR: /tmp/toolchain-logs
+  SOURCE_DIR: /mnt/source
+  ARTIFACTS_DIR: /mnt/artifacts
+  CCACHE_DIR: /mnt/ccache
+  BUILD_LOG_DIR: /mnt/build-logs
+  TOOLCHAIN_LOG_DIR: /mnt/toolchain-logs
 
 jobs:
   build:
@@ -69,7 +69,7 @@ jobs:
         run: |
           echo "=== 智能系统资源分析 ==="
           echo "📊 磁盘空间:"
-          df -h | grep -E "Filesystem|/dev/root|/dev/sda"
+          df -h
           echo ""
           echo "💻 CPU 信息:"
           echo "核心数: $(nproc)"
@@ -80,11 +80,12 @@ jobs:
           free -h
           echo ""
           echo "📁 关键目录状态:"
-          for dir in /tmp /home/runner /opt /var /usr; do
+          for dir in /tmp /mnt /home/runner /opt /var /usr; do
             if [ -d "$dir" ]; then
               mount_point=$(df "$dir" 2>/dev/null | awk 'NR==2 {print $6}')
               usage=$(df -h "$dir" 2>/dev/null | awk 'NR==2 {print $5}')
-              echo "  $dir: 挂载点=$mount_point, 使用率=$usage"
+              available=$(df -h "$dir" 2>/dev/null | awk 'NR==2 {print $4}')
+              echo "  $dir: 挂载点=$mount_point, 使用率=$usage, 可用=$available"
             else
               echo "  $dir: 目录不存在"
             fi
@@ -98,8 +99,15 @@ jobs:
         run: |
           echo "设置全面编译环境..."
           
-          # 创建所有必要目录
-          echo "📁 创建目录结构..."
+          # 清理根分区空间
+          echo "🧹 清理根分区临时空间..."
+          sudo rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
+          
+          # 在 /mnt 创建所有必要目录
+          echo "📁 在 /mnt 创建目录结构..."
           sudo mkdir -p ${{ env.SOURCE_DIR }} ${{ env.ARTIFACTS_DIR }} ${{ env.CCACHE_DIR }} ${{ env.BUILD_LOG_DIR }} ${{ env.TOOLCHAIN_LOG_DIR }}
           
           # 设置所有权和权限
@@ -113,17 +121,20 @@ jobs:
           for dir in ${{ env.SOURCE_DIR }} ${{ env.ARTIFACTS_DIR }} ${{ env.CCACHE_DIR }} ${{ env.BUILD_LOG_DIR }} ${{ env.TOOLCHAIN_LOG_DIR }}; do
             if [ -d "$dir" ]; then
               echo "✅ $dir: 创建成功"
+              # 显示目录所在分区的空间
+              dir_df=$(df -h "$dir" | awk 'NR==2')
+              echo "   所在分区: $dir_df"
             else
               echo "❌ $dir: 创建失败"
               exit 1
             fi
           done
           
-          echo "🔄 创建高性能交换文件..."
-          sudo dd if=/dev/zero of=/swapfile bs=1M count=8192 status=progress
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          echo "🔄 在 /mnt 创建高性能交换文件..."
+          sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=8192 status=progress
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
           
           echo "⚡ 优化系统性能设置..."
           ulimit -n 65536
@@ -134,6 +145,11 @@ jobs:
           echo "🔧 设置环境变量..."
           export FORCE_UNSAFE_CONFIGURE=1
           export TERM=xterm-256color
+          
+          # 显示设置后的空间状态
+          echo ""
+          echo "📊 设置后磁盘空间状态:"
+          df -h
 
       - name: 🔍 智能文件发现
         id: file-discovery
@@ -274,17 +290,17 @@ jobs:
         run: |
           echo "设置高级缓存与性能优化..."
           
-          # CCache配置
+          # CCache配置 - 现在在 /mnt 分区
           mkdir -p ${{ env.CCACHE_DIR }}
-          ccache -M 8G
+          ccache -M 16G  # 增加缓存大小，因为 /mnt 有足够空间
           ccache -o compression=true
           ccache -o compression_level=6
-          ccache -o max_files=100000
+          ccache -o max_files=200000
           ccache -o sloppiness=file_macro,include_file_mtime,include_file_ctime,time_macros
           
           echo "CCACHE_DIR=${{ env.CCACHE_DIR }}" >> $GITHUB_ENV
           echo "CCACHE_COMPRESS=1" >> $GITHUB_ENV
-          echo "CCACHE_MAXSIZE=8G" >> $GITHUB_ENV
+          echo "CCACHE_MAXSIZE=16G" >> $GITHUB_ENV
           echo "CCACHE_SLOPPINESS=file_macro,include_file_mtime,include_file_ctime,time_macros" >> $GITHUB_ENV
           
           echo "📊 初始CCache统计:"
@@ -331,7 +347,7 @@ jobs:
             rm -rf .[!.]* * 2>/dev/null || true
             
             # 执行克隆命令
-            if eval $clone_cmd 2>&1 | tee /tmp/clone.log; then
+            if eval $clone_cmd 2>&1 | tee ${{ env.BUILD_LOG_DIR }}/clone.log; then
               # 验证克隆是否真的成功
               if [ -d ".git" ]; then
                 ACTUAL_BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
@@ -347,9 +363,9 @@ jobs:
               CLONE_ERROR="克隆命令执行失败"
               echo "❌ 策略失败: $strategy_name"
               # 显示克隆错误详情
-              if [ -f "/tmp/clone.log" ]; then
+              if [ -f "${{ env.BUILD_LOG_DIR }}/clone.log" ]; then
                 echo "克隆错误详情:"
-                tail -20 /tmp/clone.log
+                tail -20 ${{ env.BUILD_LOG_DIR }}/clone.log
               fi
             fi
           done
@@ -357,7 +373,7 @@ jobs:
           if [ "$CLONE_SUCCESS" = "false" ]; then
             echo "❌ 所有克隆策略都失败"
             echo "🔍 最后尝试的克隆日志:"
-            cat /tmp/clone.log 2>/dev/null || echo "无克隆日志"
+            cat ${{ env.BUILD_LOG_DIR }}/clone.log 2>/dev/null || echo "无克隆日志"
             echo "错误: $CLONE_ERROR"
             exit 1
           fi
@@ -385,16 +401,24 @@ jobs:
           echo "📊 当前磁盘使用情况:"
           df -h
 
-          AVAILABLE_GB=$(df /tmp | awk 'NR==2 {gsub("G","",$4); print int($4)}')
-          echo "可用空间: ${AVAILABLE_GB}GB"
+          # 检查关键分区的可用空间
+          ROOT_AVAILABLE=$(df / | awk 'NR==2 {gsub("G","",$4); print int($4)}')
+          MNT_AVAILABLE=$(df /mnt | awk 'NR==2 {gsub("G","",$4); print int($4)}')
+          
+          echo "根分区可用空间: ${ROOT_AVAILABLE}GB"
+          echo "/mnt 分区可用空间: ${MNT_AVAILABLE}GB"
 
-          if [ "$AVAILABLE_GB" -lt 15 ]; then
-            echo "🚨 严重警告: 磁盘空间不足15GB，编译可能失败"
+          if [ "$ROOT_AVAILABLE" -lt 2 ]; then
+            echo "🚨 严重警告: 根分区空间不足2GB，可能影响系统稳定性"
+          fi
+
+          if [ "$MNT_AVAILABLE" -lt 10 ]; then
+            echo "🚨 严重错误: /mnt 分区空间不足10GB，无法编译"
             exit 1
-          elif [ "$AVAILABLE_GB" -lt 25 ]; then
-            echo "⚠️ 警告: 磁盘空间紧张 (${AVAILABLE_GB}GB)"
+          elif [ "$MNT_AVAILABLE" -lt 20 ]; then
+            echo "⚠️ 警告: /mnt 分区空间紧张 (${MNT_AVAILABLE}GB)"
           else
-            echo "✅ 磁盘空间充足"
+            echo "✅ /mnt 分区空间充足"
           fi
 
       - name: 🔄 智能源码初始化
@@ -809,26 +833,36 @@ jobs:
           echo "📊 详细磁盘使用情况:"
           df -h
 
-          AVAILABLE_GB=$(df /tmp | awk 'NR==2 {gsub("G","",$4); print int($4)}')
-          echo ""
-          echo "📈 可用空间: ${AVAILABLE_GB}GB"
+          # 检查关键分区的可用空间
+          ROOT_AVAILABLE=$(df / | awk 'NR==2 {gsub("G","",$4); print int($4)}')
+          MNT_AVAILABLE=$(df /mnt | awk 'NR==2 {gsub("G","",$4); print int($4)}')
+          
+          echo "根分区可用空间: ${ROOT_AVAILABLE}GB"
+          echo "/mnt 分区可用空间: ${MNT_AVAILABLE}GB"
 
-          if [ "$AVAILABLE_GB" -lt 10 ]; then
-            echo "🚨 严重错误: 磁盘空间不足10GB，无法编译"
-            exit 1
-          elif [ "$AVAILABLE_GB" -lt 20 ]; then
-            echo "⚠️ 严重警告: 磁盘空间紧张 (${AVAILABLE_GB}GB)，编译可能失败"
+          if [ "$ROOT_AVAILABLE" -lt 1 ]; then
+            echo "🚨 严重错误: 根分区空间不足1GB，无法继续"
             echo "🧹 执行紧急空间清理..."
+            sudo rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
             sudo apt-get clean
             sudo rm -rf /var/lib/apt/lists/*
             sudo sync
             echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
             echo "📊 清理后空间:"
             df -h
-          elif [ "$AVAILABLE_GB" -lt 30 ]; then
-            echo "⚠️ 警告: 磁盘空间有限 (${AVAILABLE_GB}GB)"
+          elif [ "$ROOT_AVAILABLE" -lt 2 ]; then
+            echo "⚠️ 严重警告: 根分区空间紧张 (${ROOT_AVAILABLE}GB)"
           else
-            echo "✅ 磁盘空间充足"
+            echo "✅ 根分区空间正常"
+          fi
+
+          if [ "$MNT_AVAILABLE" -lt 10 ]; then
+            echo "🚨 严重错误: /mnt 分区空间不足10GB，无法编译"
+            exit 1
+          elif [ "$MNT_AVAILABLE" -lt 20 ]; then
+            echo "⚠️ 警告: /mnt 分区空间紧张 (${MNT_AVAILABLE}GB)"
+          else
+            echo "✅ /mnt 分区空间充足"
           fi
 
           echo ""
@@ -997,7 +1031,7 @@ jobs:
             echo "Runner: ${{ runner.os }}"
             echo "CPU核心: $(nproc)"
             echo "内存: $(free -h | awk '/^Mem:/{print $2}')"
-            echo "磁盘空间: $(df -h /tmp | awk 'NR==2{print $4}') 可用"
+            echo "磁盘空间: $(df -h /mnt | awk 'NR==2{print $4}') 可用"
             echo ""
             echo "=== 产物信息 ==="
             if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
@@ -1062,8 +1096,8 @@ jobs:
           
           # 清理交换文件
           echo "🧹 清理交换文件..."
-          sudo swapoff /swapfile 2>/dev/null || true
-          sudo rm -f /swapfile 2>/dev/null || true
+          sudo swapoff /mnt/swapfile 2>/dev/null || true
+          sudo rm -f /mnt/swapfile 2>/dev/null || true
           
           # 系统级清理
           echo "🧹 系统级清理..."
@@ -1094,8 +1128,13 @@ jobs:
           sudo rm -rf ${{ env.TOOLCHAIN_LOG_DIR }} 2>/dev/null || echo "工具链日志已清理"
           
           # 再次确保交换文件被清理
-          sudo swapoff /swapfile 2>/dev/null || true
-          sudo rm -f /swapfile 2>/dev/null || true
+          sudo swapoff /mnt/swapfile 2>/dev/null || true
+          sudo rm -f /mnt/swapfile 2>/dev/null || true
+          
+          # 清理根分区
+          sudo rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
           
           echo "📊 最终磁盘状态:"
           df -h
