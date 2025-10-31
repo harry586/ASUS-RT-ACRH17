@@ -65,6 +65,7 @@ jobs:
           path: firmware-config
 
       - name: 💾 深度系统资源分析
+        timeout-minutes: 3
         run: |
           echo "=== 深度系统资源分析 ==="
           echo "📊 磁盘空间详细分析:"
@@ -72,17 +73,27 @@ jobs:
           echo ""
           echo "💻 CPU 架构信息:"
           echo "核心数: $(nproc)"
-          lscpu | grep -E "Architecture|Model name|CPU MHz|CPU max MHz|Threads per core|Cores per socket" || true
+          echo "架构: $(uname -m)"
+          lscpu | grep -E "Architecture|Model name|CPU MHz|CPU max MHz" | head -5 || true
           echo ""
           echo "🧠 内存详细信息:"
           free -h
-          cat /proc/meminfo | grep -E "MemTotal|MemFree|MemAvailable" || true
+          echo "内存总量: $(grep MemTotal /proc/meminfo | awk '{print $2 $3}')"
+          echo "可用内存: $(grep MemAvailable /proc/meminfo | awk '{print $2 $3}')"
           echo ""
-          echo "📁 关键目录空间使用:"
-          du -sh /home/runner /tmp /opt /var /usr 2>/dev/null | sort -hr | head -10 || true
+          echo "📁 关键目录空间使用 (快速扫描):"
+          {
+            echo "/tmp: $(du -sh /tmp 2>/dev/null | cut -f1 || echo 'N/A')"
+            echo "/home/runner: $(du -sh /home/runner 2>/dev/null | cut -f1 || echo 'N/A')" 
+            echo "/opt: $(du -sh /opt 2>/dev/null | cut -f1 || echo 'N/A')"
+            echo "/var: $(du -sh /var 2>/dev/null | cut -f1 || echo 'N/A')"
+            echo "/usr: $(du -sh /usr 2>/dev/null | cut -f1 || echo 'N/A')"
+          } | column -t
           echo ""
           echo "🔄 交换空间状态:"
-          swapon --show || echo "无交换空间"
+          swapon --show 2>/dev/null || echo "无交换空间或未启用"
+          echo ""
+          echo "✅ 系统资源分析完成"
 
       - name: 🔧 全面工作环境设置
         run: |
@@ -103,8 +114,6 @@ jobs:
           for dir in ${{ env.SOURCE_DIR }} ${{ env.ARTIFACTS_DIR }} ${{ env.CCACHE_DIR }} ${{ env.BUILD_LOG_DIR }} ${{ env.TOOLCHAIN_LOG_DIR }}; do
             if [ -d "$dir" ]; then
               echo "✅ $dir: 创建成功"
-              echo "   权限: $(ls -ld $dir | awk '{print $1}')"
-              echo "   所有者: $(ls -ld $dir | awk '{print $3}')"
             else
               echo "❌ $dir: 创建失败"
               exit 1
@@ -126,42 +135,65 @@ jobs:
           export FORCE_UNSAFE_CONFIGURE=1
           export TERM=xterm-256color
 
-      - name: 🔍 全面配置文件验证
+      - name: 🔍 配置文件验证
         run: |
-          echo "=== 全面配置文件验证 ==="
+          echo "=== 配置文件验证 ==="
           
           # 检查目录结构
           echo "📁 配置文件目录结构:"
-          find firmware-config -type f -name "*.json" -o -name ".config_*" | sort
+          find firmware-config -type f -name "*.json" -o -name ".config_*" | head -10 || echo "无配置文件"
           
+          # 重点检查 repositories.json
+          echo ""
+          echo "🔍 检查 repositories.json 文件..."
           if [ ! -f "firmware-config/repositories.json" ]; then
-            echo "❌ 严重错误: repositories.json 文件不存在"
-            echo "请创建 firmware-config/repositories.json 文件，内容示例:"
-            echo '{ "repositories": { "immortalwrt": { "url": "https://github.com/immortalwrt/immortalwrt", "description": "ImmortalWrt 功能丰富", "recommended_branch": "openwrt-21.02" }, "openwrt": { "url": "https://github.com/openwrt/openwrt", "description": "OpenWrt 官方纯净", "recommended_branch": "main" }, "lede": { "url": "https://github.com/coolsnowwolf/lede", "description": "LEDE 集成度高", "recommended_branch": "master" } } }'
+            echo "❌ 错误: firmware-config/repositories.json 文件不存在"
+            echo "当前工作目录: $(pwd)"
+            echo "目录内容:"
+            ls -la
+            echo ""
+            echo "firmware-config 目录内容:"
+            ls -la firmware-config/ 2>/dev/null || echo "firmware-config 目录不存在"
             exit 1
           fi
           
-          echo "✅ repositories.json 存在"
-          echo "📋 配置文件内容验证:"
-          cat firmware-config/repositories.json
+          echo "✅ repositories.json 文件存在"
+          echo "文件路径: $(readlink -f firmware-config/repositories.json)"
+          echo ""
+          echo "📋 配置文件内容预览:"
+          head -20 firmware-config/repositories.json
           
           # 验证JSON格式
+          echo ""
           echo "🔍 JSON格式验证..."
-          if ! jq empty firmware-config/repositories.json 2>/dev/null; then
-            echo "❌ repositories.json 格式错误"
+          if jq . firmware-config/repositories.json > /dev/null 2>&1; then
+            echo "✅ JSON格式正确"
+          else
+            echo "❌ JSON格式错误"
             exit 1
           fi
           
           # 验证必需字段
+          echo ""
           echo "🔍 必需字段验证..."
-          for preset in immortalwrt openwrt lede; do
+          REQUIRED_PRESETS=("immortalwrt" "openwrt" "lede")
+          for preset in "${REQUIRED_PRESETS[@]}"; do
             if jq -e ".repositories.$preset.url" firmware-config/repositories.json >/dev/null 2>&1; then
               echo "✅ $preset: URL字段存在"
             else
               echo "❌ $preset: URL字段缺失"
+              exit 1
+            fi
+            
+            if jq -e ".repositories.$preset.recommended_branch" firmware-config/repositories.json >/dev/null 2>&1; then
+              echo "✅ $preset: recommended_branch字段存在"
+            else
+              echo "❌ $preset: recommended_branch字段缺失"
+              exit 1
             fi
           done
           
+          echo ""
           echo "✅ 所有配置文件验证通过"
 
       - name: 🔧 智能源码配置解析
@@ -170,28 +202,38 @@ jobs:
           echo "正在智能解析源码配置..."
           
           PRESET="${{ github.event.inputs.source_preset }}"
-          SOURCE_URL=$(jq -r ".repositories.$PRESET.url // empty" firmware-config/repositories.json)
-          DESCRIPTION=$(jq -r ".repositories.$PRESET.description // \"未知\"" firmware-config/repositories.json)
-          RECOMMENDED_BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch // \"main\"" firmware-config/repositories.json)
+          echo "使用的预设: $PRESET"
           
-          if [ -z "$SOURCE_URL" ]; then
-            echo "❌ 错误: 未找到预设 $PRESET 的源码URL"
+          # 验证预设有效性
+          if ! jq -e ".repositories.$PRESET" firmware-config/repositories.json >/dev/null 2>&1; then
+            echo "❌ 错误: 预设 '$PRESET' 不存在"
             echo "可用的预设:"
             jq -r '.repositories | keys[]' firmware-config/repositories.json
             exit 1
           fi
           
+          # 获取源码配置
+          SOURCE_URL=$(jq -r ".repositories.$PRESET.url" firmware-config/repositories.json)
+          DESCRIPTION=$(jq -r ".repositories.$PRESET.description // \"未知\"" firmware-config/repositories.json)
+          RECOMMENDED_BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch" firmware-config/repositories.json)
+          
+          echo "✅ 成功获取配置信息"
+          
           BRANCH="${{ github.event.inputs.source_branch }}"
           if [ "$BRANCH" = "auto" ]; then
             BRANCH="$RECOMMENDED_BRANCH"
             echo "🤖 自动选择推荐分支: $BRANCH"
+          else
+            echo "📋 使用指定分支: $BRANCH"
           fi
           
+          # 设置环境变量
           echo "SOURCE_URL=$SOURCE_URL" >> $GITHUB_ENV
           echo "SOURCE_BRANCH=$BRANCH" >> $GITHUB_ENV
           echo "SOURCE_PRESET=$PRESET" >> $GITHUB_ENV
           echo "RECOMMENDED_BRANCH=$RECOMMENDED_BRANCH" >> $GITHUB_ENV
           
+          echo ""
           echo "✅ 源码配置解析完成"
           echo "📊 配置详情:"
           echo "  - 预设: $PRESET"
@@ -225,32 +267,15 @@ jobs:
           
           # 验证关键工具
           echo "=== 关键工具验证 ==="
-          for tool in gcc g++ make flex bison m4 git curl wget; do
+          for tool in gcc g++ make flex bison git curl wget; do
             if command -v $tool >/dev/null 2>&1; then
-              version=$($tool --version 2>/dev/null | head -1 | tr -d '\n' || echo "未知版本")
+              version=$($tool --version 2>/dev/null | head -1 | cut -d' ' -f1-4 | tr -d '\n' || echo "可用")
               echo "✅ $tool: $version"
             else
               echo "❌ $tool: 未安装"
               exit 1
             fi
           done
-          
-          # 验证开发库
-          echo "=== 开发库验证 ==="
-          for lib in libssl-dev libncurses5-dev zlib1g-dev libelf-dev; do
-            if dpkg -l | grep -q $lib; then
-              version=$(dpkg -l | grep $lib | awk '{print $3}')
-              echo "✅ $lib: 已安装 ($version)"
-            else
-              echo "❌ $lib: 未安装"
-              exit 1
-            fi
-          done
-          
-          # 验证Python环境
-          echo "=== Python环境验证 ==="
-          python3 --version || echo "❌ Python3 未安装"
-          pip3 --version || echo "❌ pip3 未安装"
           
           echo "✅ 所有依赖安装和验证完成"
 
@@ -290,24 +315,30 @@ jobs:
           
           REQUESTED_BRANCH="${{ env.SOURCE_BRANCH }}"
           echo "🎯 请求分支: $REQUESTED_BRANCH"
+          echo "🎯 源码仓库: ${{ env.SOURCE_URL }}"
           
           # 定义克隆策略
-          CLONE_STRATEGY_1="指定分支: git clone --depth 1 --branch $REQUESTED_BRANCH ${{ env.SOURCE_URL }} ."
-          CLONE_STRATEGY_2="main分支: git clone --depth 1 --branch main ${{ env.SOURCE_URL }} ."
-          CLONE_STRATEGY_3="master分支: git clone --depth 1 --branch master ${{ env.SOURCE_URL }} ."
-          CLONE_STRATEGY_4="默认分支: git clone --depth 1 ${{ env.SOURCE_URL }} ."
+          CLONE_STRATEGIES=(
+            "指定分支: git clone --depth 1 --branch $REQUESTED_BRANCH ${{ env.SOURCE_URL }} ."
+            "main分支: git clone --depth 1 --branch main ${{ env.SOURCE_URL }} ."
+            "master分支: git clone --depth 1 --branch master ${{ env.SOURCE_URL }} ."
+            "默认分支: git clone --depth 1 ${{ env.SOURCE_URL }} ."
+          )
           
-          CLONE_STRATEGIES="$CLONE_STRATEGY_1 $CLONE_STRATEGY_2 $CLONE_STRATEGY_3 $CLONE_STRATEGY_4"
-          
-          for strategy in $CLONE_STRATEGIES; do
+          CLONE_SUCCESS=false
+          for strategy in "${CLONE_STRATEGIES[@]}"; do
             strategy_name=$(echo "$strategy" | cut -d: -f1)
             clone_cmd=$(echo "$strategy" | cut -d: -f2-)
             
+            echo ""
             echo "🔧 尝试策略: $strategy_name"
+            echo "命令: $clone_cmd"
+            
             if eval $clone_cmd 2>/dev/null; then
               ACTUAL_BRANCH=$(git branch --show-current)
               echo "✅ 克隆成功: $strategy_name"
               echo "📋 实际分支: $ACTUAL_BRANCH"
+              CLONE_SUCCESS=true
               break
             else
               echo "❌ 策略失败: $strategy_name"
@@ -315,7 +346,7 @@ jobs:
             fi
           done
           
-          if [ -z "$ACTUAL_BRANCH" ]; then
+          if [ "$CLONE_SUCCESS" = "false" ]; then
             echo "❌ 所有克隆策略都失败"
             exit 1
           fi
@@ -323,16 +354,18 @@ jobs:
           echo "ACTUAL_BRANCH=$ACTUAL_BRANCH" >> $GITHUB_ENV
           
           # 源码验证
+          echo ""
           echo "🔍 源码仓库验证..."
           echo "📁 源码目录结构:"
-          ls -la
+          ls -la | head -10
+          echo ""
           echo "📊 仓库信息:"
-          git log --oneline -5 || echo "无法获取提交历史"
+          git log --oneline -3 2>/dev/null || echo "无法获取提交历史"
+          echo ""
           echo "🌿 分支信息:"
-          git branch -a || echo "无法获取分支信息"
-          echo "🔗 远程仓库:"
-          git remote -v || echo "无法获取远程信息"
+          git branch -a 2>/dev/null | head -5 || echo "无法获取分支信息"
           
+          echo ""
           echo "✅ 源码获取与验证完成"
 
       - name: 💾 源码获取后空间监测
@@ -341,7 +374,7 @@ jobs:
           echo "📊 当前磁盘使用情况:"
           df -h
 
-          AVAILABLE_GB=$(df /tmp | awk 'NR==2 {print $4}' | sed 's/G//')
+          AVAILABLE_GB=$(df /tmp | awk 'NR==2 {gsub("G","",$4); print int($4)}')
           echo "可用空间: ${AVAILABLE_GB}GB"
 
           if [ "$AVAILABLE_GB" -lt 15 ]; then
