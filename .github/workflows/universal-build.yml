@@ -21,7 +21,7 @@ on:
         description: 设备配置文件路径
         required: true
         type: string
-        default: firmware-config/configs/.config_rt-ac42u_immortalwrt
+        default: .config_rt-ac42u_immortalwrt
       build_optimization:
         description: 编译优化策略
         required: true
@@ -485,13 +485,15 @@ jobs:
           CONFIG_FILE="${{ github.event.inputs.config_profile }}"
           echo "正在查找配置文件: $CONFIG_FILE"
           
-          # 基于您的目录结构查找配置文件
+          # 基于您的实际目录结构查找配置文件
+          # 现在假设配置文件直接在 firmware-config 目录下
           CONFIG_PATHS=(
-            "$CONFIG_FILE"
             "../$CONFIG_FILE"
+            "../firmware-config/$CONFIG_FILE"
             "../../$CONFIG_FILE"
-            "firmware-config/configs/$(basename $CONFIG_FILE)"
-            "../firmware-config/configs/$(basename $CONFIG_FILE)"
+            "../../firmware-config/$CONFIG_FILE"
+            "$CONFIG_FILE"
+            "firmware-config/$CONFIG_FILE"
           )
           
           CONFIG_FOUND=""
@@ -525,8 +527,11 @@ jobs:
             echo "所有可用的配置文件:"
             find . -name ".config_*" -o -name "*.config" 2>/dev/null | head -20 || echo "无配置文件"
             echo ""
-            echo "firmware-config/configs 目录中的文件:"
-            ls -la firmware-config/configs/ 2>/dev/null || echo "firmware-config/configs 目录不存在"
+            echo "firmware-config 目录中的文件:"
+            ls -la firmware-config/ 2>/dev/null || echo "firmware-config 目录不存在"
+            echo ""
+            echo "所有 .config_* 文件:"
+            find . -name ".config_*" 2>/dev/null || echo "无 .config_* 文件"
             exit 1
           fi
           
@@ -709,9 +714,9 @@ jobs:
           
           # 基于您的目录结构查找自定义功能
           CUSTOM_PATHS=(
-            "firmware-config/custom-features"
             "../firmware-config/custom-features"
             "../../firmware-config/custom-features"
+            "firmware-config/custom-features"
           )
           
           # 预编译IPK包处理
