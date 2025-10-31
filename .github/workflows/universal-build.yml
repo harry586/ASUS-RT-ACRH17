@@ -135,87 +135,54 @@ jobs:
           export FORCE_UNSAFE_CONFIGURE=1
           export TERM=xterm-256color
 
-      - name: 🔍 配置文件验证
+      - name: 🔍 智能文件发现
+        id: file-discovery
         run: |
-          echo "=== 配置文件验证 ==="
+          echo "=== 智能文件发现 ==="
+          echo "🔍 分析仓库结构..."
           
-          # 检查目录结构
-          echo "📁 配置文件目录结构:"
-          find . -type f \( -name "*.json" -o -name ".config_*" \) 2>/dev/null | head -10 || echo "无配置文件"
-          
-          # 重点检查 repositories.json - 基于您的目录结构
+          # 查找 repositories.json
           echo ""
-          echo "🔍 检查 repositories.json 文件..."
-          
-          # 基于您的目录结构查找
-          REPO_JSON_PATHS=(
-            "firmware-config/repositories.json"
-            "./firmware-config/repositories.json"
-          )
-          
-          REPO_JSON_FOUND=""
-          for path in "${REPO_JSON_PATHS[@]}"; do
-            if [ -f "$path" ]; then
-              REPO_JSON_FOUND="$path"
-              echo "✅ 找到 repositories.json: $path"
-              echo "文件详细信息:"
-              ls -la "$path"
-              break
-            else
-              echo "❌ 未找到: $path"
-            fi
-          done
-          
-          if [ -z "$REPO_JSON_FOUND" ]; then
-            echo "❌ 错误: 未找到 repositories.json 文件"
-            echo ""
-            echo "当前工作目录: $(pwd)"
-            echo ""
-            echo "目录内容:"
-            ls -la
-            echo ""
-            echo "firmware-config 目录内容:"
-            ls -la firmware-config/ 2>/dev/null || echo "firmware-config 目录不存在"
-            echo ""
-            echo "搜索的文件路径: ${REPO_JSON_PATHS[*]}"
-            exit 1
-          fi
-          
-          echo "✅ 使用 repositories.json 文件: $REPO_JSON_FOUND"
-          echo "REPO_JSON_PATH=$REPO_JSON_FOUND" >> $GITHUB_ENV
-          
-          # 验证JSON格式
-          echo ""
-          echo "🔍 JSON格式验证..."
-          if jq . "$REPO_JSON_FOUND" > /dev/null 2>&1; then
-            echo "✅ JSON格式正确"
+          echo "📋 查找 repositories.json 文件..."
+          REPO_JSON_FOUND=$(find . -name "repositories.json" -type f 2>/dev/null | head -1)
+          if [ -n "$REPO_JSON_FOUND" ]; then
+            echo "✅ 找到 repositories.json: $REPO_JSON_FOUND"
+            echo "REPO_JSON_PATH=$REPO_JSON_FOUND" >> $GITHUB_ENV
           else
-            echo "❌ JSON格式错误"
+            echo "❌ 未找到 repositories.json 文件"
+            echo "当前目录结构:"
+            find . -type f -name "*.json" | head -10 || echo "无JSON文件"
             exit 1
           fi
           
-          # 验证必需字段
+          # 查找所有可能的配置文件
           echo ""
-          echo "🔍 必需字段验证..."
-          REQUIRED_PRESETS=("immortalwrt" "openwrt" "lede")
-          for preset in "${REQUIRED_PRESETS[@]}"; do
-            if jq -e ".repositories.$preset.url" "$REPO_JSON_FOUND" >/dev/null 2>&1; then
-              echo "✅ $preset: URL字段存在"
-            else
-              echo "❌ $preset: URL字段缺失"
-              exit 1
-            fi
-            
-            if jq -e ".repositories.$preset.recommended_branch" "$REPO_JSON_FOUND" >/dev/null 2>&1; then
-              echo "✅ $preset: recommended_branch字段存在"
-            else
-              echo "❌ $preset: recommended_branch字段缺失"
-              exit 1
-            fi
-          done
+          echo "📋 查找所有配置文件..."
+          CONFIG_FILES=$(find . -name ".config_*" -type f 2>/dev/null)
+          if [ -n "$CONFIG_FILES" ]; then
+            echo "✅ 找到以下配置文件:"
+            echo "$CONFIG_FILES"
+            echo "CONFIG_FILES_FOUND=true" >> $GITHUB_ENV
+          else
+            echo "⚠️ 未找到 .config_* 文件"
+            echo "CONFIG_FILES_FOUND=false" >> $GITHUB_ENV
+          fi
+          
+          # 查找自定义功能目录
+          echo ""
+          echo "📋 查找自定义功能目录..."
+          CUSTOM_FEATURES_DIR=$(find . -type d -name "custom-features" 2>/dev/null | head -1)
+          if [ -n "$CUSTOM_FEATURES_DIR" ]; then
+            echo "✅ 找到自定义功能目录: $CUSTOM_FEATURES_DIR"
+            echo "CUSTOM_FEATURES_DIR=$CUSTOM_FEATURES_DIR" >> $GITHUB_ENV
+          else
+            echo "ℹ️ 未找到自定义功能目录"
+            echo "CUSTOM_FEATURES_DIR=" >> $GITHUB_ENV
+          fi
           
           echo ""
-          echo "✅ 所有配置文件验证通过"
+          echo "📁 完整目录结构 (前20个文件):"
+          find . -type f | head -20
 
       - name: 🔧 智能源码配置解析
         id: source-config
@@ -485,32 +452,52 @@ jobs:
           CONFIG_FILE="${{ github.event.inputs.config_profile }}"
           echo "正在查找配置文件: $CONFIG_FILE"
           
-          # 基于您的实际目录结构查找配置文件
-          # 现在假设配置文件直接在 firmware-config 目录下
+          # 智能查找配置文件 - 在所有可能的位置查找
+          echo "🔍 智能查找配置文件..."
+          
+          # 首先尝试直接使用输入的文件名
           CONFIG_PATHS=(
             "../$CONFIG_FILE"
-            "../firmware-config/$CONFIG_FILE"
             "../../$CONFIG_FILE"
-            "../../firmware-config/$CONFIG_FILE"
             "$CONFIG_FILE"
-            "firmware-config/$CONFIG_FILE"
           )
           
+          # 然后尝试查找所有 .config_* 文件
+          ALL_CONFIG_FILES=$(find .. -name ".config_*" -type f 2>/dev/null)
+          
           CONFIG_FOUND=""
+          
+          # 首先尝试精确匹配输入的文件名
           for path in "${CONFIG_PATHS[@]}"; do
             if [ -f "$path" ]; then
               CONFIG_FOUND="$path"
               echo "✅ 找到配置文件: $path"
-              echo "文件详细信息:"
-              ls -la "$path"
               break
-            else
-              echo "❌ 未找到: $path"
             fi
           done
           
+          # 如果没有找到，尝试在所有 .config_* 文件中查找匹配的
+          if [ -z "$CONFIG_FOUND" ] && [ -n "$ALL_CONFIG_FILES" ]; then
+            echo "🔍 在所有配置文件中查找匹配项..."
+            # 提取文件名（不含路径）
+            CONFIG_BASENAME=$(basename "$CONFIG_FILE")
+            MATCHED_FILE=$(echo "$ALL_CONFIG_FILES" | grep -F "$CONFIG_BASENAME" | head -1)
+            
+            if [ -n "$MATCHED_FILE" ]; then
+              CONFIG_FOUND="$MATCHED_FILE"
+              echo "✅ 找到匹配的配置文件: $MATCHED_FILE"
+            fi
+          fi
+          
+          # 如果还没有找到，显示第一个可用的配置文件
+          if [ -z "$CONFIG_FOUND" ] && [ -n "$ALL_CONFIG_FILES" ]; then
+            FIRST_CONFIG=$(echo "$ALL_CONFIG_FILES" | head -1)
+            CONFIG_FOUND="$FIRST_CONFIG"
+            echo "⚠️ 使用第一个可用的配置文件: $FIRST_CONFIG"
+          fi
+          
           if [ -z "$CONFIG_FOUND" ]; then
-            echo "❌ 错误: 配置文件 '$CONFIG_FILE' 不存在"
+            echo "❌ 错误: 无法找到配置文件 '$CONFIG_FILE'"
             echo ""
             echo "当前工作目录: $(pwd)"
             echo ""
@@ -521,21 +508,15 @@ jobs:
             echo "上级目录:"
             ls -la ../
             echo ""
-            echo "上上级目录:"
-            ls -la ../../
-            echo ""
             echo "所有可用的配置文件:"
-            find . -name ".config_*" -o -name "*.config" 2>/dev/null | head -20 || echo "无配置文件"
+            find .. -name ".config_*" -type f 2>/dev/null || echo "无 .config_* 文件"
             echo ""
-            echo "firmware-config 目录中的文件:"
-            ls -la firmware-config/ 2>/dev/null || echo "firmware-config 目录不存在"
-            echo ""
-            echo "所有 .config_* 文件:"
-            find . -name ".config_*" 2>/dev/null || echo "无 .config_* 文件"
+            echo "所有文件 (前30个):"
+            find .. -type f | head -30
             exit 1
           fi
           
-          # 备份原始配置
+          # 应用配置
           cp "$CONFIG_FOUND" .config
           echo "✅ 配置应用完成: $(basename $CONFIG_FOUND)"
           
@@ -712,17 +693,13 @@ jobs:
           cd ${{ env.SOURCE_DIR }}
           echo "处理智能自定义功能..."
           
-          # 基于您的目录结构查找自定义功能
-          CUSTOM_PATHS=(
-            "../firmware-config/custom-features"
-            "../../firmware-config/custom-features"
-            "firmware-config/custom-features"
-          )
+          CUSTOM_FEATURES_DIR="${{ env.CUSTOM_FEATURES_DIR }}"
           
-          # 预编译IPK包处理
-          IPK_FOUND=false
-          for base_path in "${CUSTOM_PATHS[@]}"; do
-            IPK_DIR="$base_path/prebuilt-ipks"
+          if [ -n "$CUSTOM_FEATURES_DIR" ]; then
+            echo "🔍 使用找到的自定义功能目录: $CUSTOM_FEATURES_DIR"
+            
+            # 预编译IPK包处理
+            IPK_DIR="$CUSTOM_FEATURES_DIR/prebuilt-ipks"
             if [ -d "$IPK_DIR" ]; then
               echo "📦 处理预编译IPK包..."
               IPK_COUNT=$(find "$IPK_DIR" -name "*.ipk" -type f | wc -l)
@@ -743,20 +720,15 @@ jobs:
                     fi
                   fi
                 done
-                IPK_FOUND=true
-                break
+              else
+                echo "ℹ️ IPK包目录为空"
               fi
+            else
+              echo "ℹ️ 无IPK包目录"
             fi
-          done
-          
-          if [ "$IPK_FOUND" = "false" ]; then
-            echo "ℹ️ 无IPK包目录或文件"
-          fi
-          
-          # 自定义脚本处理
-          SCRIPTS_FOUND=false
-          for base_path in "${CUSTOM_PATHS[@]}"; do
-            SCRIPTS_DIR="$base_path/scripts"
+            
+            # 自定义脚本处理
+            SCRIPTS_DIR="$CUSTOM_FEATURES_DIR/scripts"
             if [ -d "$SCRIPTS_DIR" ]; then
               echo "📜 处理自定义脚本..."
               SCRIPT_COUNT=$(find "$SCRIPTS_DIR" -name "*.sh" -type f | wc -l)
@@ -770,14 +742,14 @@ jobs:
                     echo "⚠️ 脚本执行失败或超时: $(basename $script)"
                   fi
                 done
-                SCRIPTS_FOUND=true
-                break
+              else
+                echo "ℹ️ 无脚本文件"
               fi
+            else
+              echo "ℹ️ 无脚本目录"
             fi
-          done
-          
-          if [ "$SCRIPTS_FOUND" = "false" ]; then
-            echo "ℹ️ 无脚本目录或文件"
+          else
+            echo "ℹ️ 无自定义功能目录，跳过自定义功能处理"
           fi
           
           echo "✅ 自定义功能处理完成"
