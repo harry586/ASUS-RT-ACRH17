@@ -62,7 +62,7 @@ jobs:
       - name: 📥 检出配置仓库
         uses: actions/checkout@v4
         with:
-          path: .  # 直接检出到当前目录，而不是 firmware-config
+          path: config-repo  # 明确指定检出目录
 
       - name: 💾 智能系统资源分析
         timeout-minutes: 2
@@ -127,8 +127,9 @@ jobs:
           
           echo "⚡ 优化系统性能设置..."
           ulimit -n 65536
-          sysctl -w vm.swappiness=60
-          sysctl -w vm.vfs_cache_pressure=50
+          # 忽略sysctl权限错误，这些不是关键设置
+          sudo sysctl -w vm.swappiness=60 2>/dev/null || echo "⚠️ 无法设置swappiness（非关键错误）"
+          sudo sysctl -w vm.vfs_cache_pressure=50 2>/dev/null || echo "⚠️ 无法设置vfs_cache_pressure（非关键错误）"
           
           echo "🔧 设置环境变量..."
           export FORCE_UNSAFE_CONFIGURE=1
@@ -140,7 +141,7 @@ jobs:
           
           # 检查目录结构
           echo "📁 配置文件目录结构:"
-          find . -type f \( -name "*.json" -o -name ".config_*" \) | head -10 || echo "无配置文件"
+          find config-repo -type f \( -name "*.json" -o -name ".config_*" \) 2>/dev/null | head -10 || echo "无配置文件"
           
           # 重点检查 repositories.json - 修复文件路径查找
           echo ""
@@ -148,10 +149,10 @@ jobs:
           
           # 多种可能的文件路径
           REPO_JSON_PATHS=(
+            "config-repo/repositories.json"
+            "config-repo/configs/repositories.json"
             "repositories.json"
             "configs/repositories.json"
-            "firmware-config/repositories.json"
-            "config/repositories.json"
           )
           
           REPO_JSON_FOUND=""
@@ -168,6 +169,9 @@ jobs:
             echo "当前工作目录: $(pwd)"
             echo "目录内容:"
             ls -la
+            echo ""
+            echo "config-repo 目录内容:"
+            ls -la config-repo/ 2>/dev/null || echo "config-repo 目录不存在"
             echo ""
             echo "搜索的文件路径: ${REPO_JSON_PATHS[*]}"
             exit 1
@@ -317,9 +321,9 @@ jobs:
           
           # 系统优化
           echo "🔧 系统性能优化..."
-          echo "vm.swappiness=10" | sudo tee -a /etc/sysctl.conf
-          echo "vm.vfs_cache_pressure=50" | sudo tee -a /etc/sysctl.conf
-          sudo sysctl -p
+          echo "vm.swappiness=10" | sudo tee -a /etc/sysctl.conf 2>/dev/null || echo "⚠️ 无法设置sysctl配置（非关键）"
+          echo "vm.vfs_cache_pressure=50" | sudo tee -a /etc/sysctl.conf 2>/dev/null || echo "⚠️ 无法设置sysctl配置（非关键）"
+          sudo sysctl -p 2>/dev/null || echo "⚠️ 无法应用sysctl配置（非关键）"
           
           echo "✅ 缓存与性能优化完成"
 
@@ -475,9 +479,14 @@ jobs:
           echo "应用设备配置..."
           
           CONFIG_FILE="${{ github.event.inputs.config_profile }}"
+          echo "正在查找配置文件: $CONFIG_FILE"
           
-          # 修复配置文件路径查找
+          # 修复配置文件路径查找 - 现在从config-repo目录查找
           CONFIG_PATHS=(
+            "config-repo/$CONFIG_FILE"
+            "config-repo/configs/$CONFIG_FILE"
+            "../config-repo/$CONFIG_FILE"
+            "../config-repo/configs/$CONFIG_FILE"
             "$CONFIG_FILE"
             "configs/$CONFIG_FILE"
             "../$CONFIG_FILE"
@@ -489,14 +498,37 @@ jobs:
             if [ -f "$path" ]; then
               CONFIG_FOUND="$path"
               echo "✅ 找到配置文件: $path"
+              echo "文件详细信息:"
+              ls -la "$path"
               break
+            else
+              echo "❌ 未找到: $path"
             fi
           done
           
           if [ -z "$CONFIG_FOUND" ]; then
-            echo "❌ 配置文件不存在: $CONFIG_FILE"
-            echo "🔍 可用的配置文件:"
-            find . -name ".config_*" 2>/dev/null | head -10 || echo "无配置文件"
+            echo "❌ 错误: 配置文件 '$CONFIG_FILE' 不存在"
+            echo ""
+            echo "🔍 当前工作目录: $(pwd)"
+            echo ""
+            echo "📁 目录结构详情:"
+            echo "当前目录:"
+            ls -la
+            echo ""
+            echo "config-repo 目录:"
+            ls -la config-repo/ 2>/dev/null || echo "config-repo 目录不存在"
+            echo ""
+            echo "config-repo/configs 目录:"
+            ls -la config-repo/configs/ 2>/dev/null || echo "config-repo/configs 目录不存在"
+            echo ""
+            echo "上级目录:"
+            ls -la ../
+            echo ""
+            echo "所有可用的配置文件:"
+            find . -name ".config_*" -o -name "*.config" 2>/dev/null | head -20 || echo "无配置文件"
+            echo ""
+            echo "config-repo 中的所有文件:"
+            find config-repo -type f 2>/dev/null | head -20 || echo "config-repo 中无文件"
             exit 1
           fi
           
@@ -677,8 +709,10 @@ jobs:
           cd ${{ env.SOURCE_DIR }}
           echo "处理智能自定义功能..."
           
-          # 修复自定义功能路径查找
+          # 修复自定义功能路径查找 - 现在从config-repo目录查找
           CUSTOM_PATHS=(
+            "config-repo/custom-features"
+            "../config-repo/custom-features"
             "custom-features"
             "../custom-features"
             "configs/custom-features"
