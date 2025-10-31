@@ -62,7 +62,7 @@ jobs:
       - name: 📥 检出配置仓库
         uses: actions/checkout@v4
         with:
-          path: firmware-config
+          path: .  # 直接检出到当前目录，而不是 firmware-config
 
       - name: 💾 智能系统资源分析
         timeout-minutes: 2
@@ -140,32 +140,46 @@ jobs:
           
           # 检查目录结构
           echo "📁 配置文件目录结构:"
-          find firmware-config -type f -name "*.json" -o -name ".config_*" | head -10 || echo "无配置文件"
+          find . -type f \( -name "*.json" -o -name ".config_*" \) | head -10 || echo "无配置文件"
           
-          # 重点检查 repositories.json
+          # 重点检查 repositories.json - 修复文件路径查找
           echo ""
           echo "🔍 检查 repositories.json 文件..."
-          if [ ! -f "firmware-config/repositories.json" ]; then
-            echo "❌ 错误: firmware-config/repositories.json 文件不存在"
+          
+          # 多种可能的文件路径
+          REPO_JSON_PATHS=(
+            "repositories.json"
+            "configs/repositories.json"
+            "firmware-config/repositories.json"
+            "config/repositories.json"
+          )
+          
+          REPO_JSON_FOUND=""
+          for path in "${REPO_JSON_PATHS[@]}"; do
+            if [ -f "$path" ]; then
+              REPO_JSON_FOUND="$path"
+              echo "✅ 找到 repositories.json: $path"
+              break
+            fi
+          done
+          
+          if [ -z "$REPO_JSON_FOUND" ]; then
+            echo "❌ 错误: 未找到 repositories.json 文件"
             echo "当前工作目录: $(pwd)"
             echo "目录内容:"
             ls -la
             echo ""
-            echo "firmware-config 目录内容:"
-            ls -la firmware-config/ 2>/dev/null || echo "firmware-config 目录不存在"
+            echo "搜索的文件路径: ${REPO_JSON_PATHS[*]}"
             exit 1
           fi
           
-          echo "✅ repositories.json 文件存在"
-          echo "文件路径: $(readlink -f firmware-config/repositories.json)"
-          echo ""
-          echo "📋 配置文件内容预览:"
-          head -20 firmware-config/repositories.json
+          echo "✅ 使用 repositories.json 文件: $REPO_JSON_FOUND"
+          echo "REPO_JSON_PATH=$REPO_JSON_FOUND" >> $GITHUB_ENV
           
           # 验证JSON格式
           echo ""
           echo "🔍 JSON格式验证..."
-          if jq . firmware-config/repositories.json > /dev/null 2>&1; then
+          if jq . "$REPO_JSON_FOUND" > /dev/null 2>&1; then
             echo "✅ JSON格式正确"
           else
             echo "❌ JSON格式错误"
@@ -177,14 +191,14 @@ jobs:
           echo "🔍 必需字段验证..."
           REQUIRED_PRESETS=("immortalwrt" "openwrt" "lede")
           for preset in "${REQUIRED_PRESETS[@]}"; do
-            if jq -e ".repositories.$preset.url" firmware-config/repositories.json >/dev/null 2>&1; then
+            if jq -e ".repositories.$preset.url" "$REPO_JSON_FOUND" >/dev/null 2>&1; then
               echo "✅ $preset: URL字段存在"
             else
               echo "❌ $preset: URL字段缺失"
               exit 1
             fi
             
-            if jq -e ".repositories.$preset.recommended_branch" firmware-config/repositories.json >/dev/null 2>&1; then
+            if jq -e ".repositories.$preset.recommended_branch" "$REPO_JSON_FOUND" >/dev/null 2>&1; then
               echo "✅ $preset: recommended_branch字段存在"
             else
               echo "❌ $preset: recommended_branch字段缺失"
@@ -203,18 +217,21 @@ jobs:
           PRESET="${{ github.event.inputs.source_preset }}"
           echo "使用的预设: $PRESET"
           
+          # 使用找到的JSON文件路径
+          REPO_JSON_PATH="${{ env.REPO_JSON_PATH }}"
+          
           # 验证预设有效性
-          if ! jq -e ".repositories.$PRESET" firmware-config/repositories.json >/dev/null 2>&1; then
+          if ! jq -e ".repositories.$PRESET" "$REPO_JSON_PATH" >/dev/null 2>&1; then
             echo "❌ 错误: 预设 '$PRESET' 不存在"
             echo "可用的预设:"
-            jq -r '.repositories | keys[]' firmware-config/repositories.json
+            jq -r '.repositories | keys[]' "$REPO_JSON_PATH"
             exit 1
           fi
           
           # 获取源码配置
-          SOURCE_URL=$(jq -r ".repositories.$PRESET.url" firmware-config/repositories.json)
-          DESCRIPTION=$(jq -r ".repositories.$PRESET.description // \"未知\"" firmware-config/repositories.json)
-          RECOMMENDED_BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch" firmware-config/repositories.json)
+          SOURCE_URL=$(jq -r ".repositories.$PRESET.url" "$REPO_JSON_PATH")
+          DESCRIPTION=$(jq -r ".repositories.$PRESET.description // \"未知\"" "$REPO_JSON_PATH")
+          RECOMMENDED_BRANCH=$(jq -r ".repositories.$PRESET.recommended_branch" "$REPO_JSON_PATH")
           
           echo "✅ 成功获取配置信息"
           
@@ -316,7 +333,7 @@ jobs:
           echo "🎯 请求分支: $REQUESTED_BRANCH"
           echo "🎯 源码仓库: ${{ env.SOURCE_URL }}"
           
-          # 定义克隆策略
+          # 定义克隆策略 - 修复分支查找逻辑
           CLONE_STRATEGIES=(
             "指定分支: git clone --depth 1 --branch $REQUESTED_BRANCH ${{ env.SOURCE_URL }} ."
             "main分支: git clone --depth 1 --branch main ${{ env.SOURCE_URL }} ."
@@ -333,20 +350,34 @@ jobs:
             echo "🔧 尝试策略: $strategy_name"
             echo "命令: $clone_cmd"
             
-            if eval $clone_cmd 2>/dev/null; then
-              ACTUAL_BRANCH=$(git branch --show-current)
-              echo "✅ 克隆成功: $strategy_name"
-              echo "📋 实际分支: $ACTUAL_BRANCH"
-              CLONE_SUCCESS=true
-              break
+            # 清理目录
+            rm -rf .[!.]* * 2>/dev/null || true
+            
+            if eval $clone_cmd 2>&1 | tee /tmp/clone.log; then
+              # 验证克隆是否真的成功
+              if [ -d ".git" ]; then
+                ACTUAL_BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
+                echo "✅ 克隆成功: $strategy_name"
+                echo "📋 实际分支: $ACTUAL_BRANCH"
+                CLONE_SUCCESS=true
+                break
+              else
+                echo "⚠️ Git目录未创建，继续尝试其他策略..."
+              fi
             else
               echo "❌ 策略失败: $strategy_name"
-              rm -rf ${{ env.SOURCE_DIR }}/*
+              # 显示克隆错误详情
+              if [ -f "/tmp/clone.log" ]; then
+                echo "克隆错误详情:"
+                tail -20 /tmp/clone.log
+              fi
             fi
           done
           
           if [ "$CLONE_SUCCESS" = "false" ]; then
             echo "❌ 所有克隆策略都失败"
+            echo "🔍 最后尝试的克隆日志:"
+            cat /tmp/clone.log 2>/dev/null || echo "无克隆日志"
             exit 1
           fi
           
@@ -443,18 +474,35 @@ jobs:
           cd ${{ env.SOURCE_DIR }}
           echo "应用设备配置..."
           
-          CONFIG_FILE="../firmware-config/${{ github.event.inputs.config_profile }}"
+          CONFIG_FILE="${{ github.event.inputs.config_profile }}"
           
-          if [ ! -f "$CONFIG_FILE" ]; then
+          # 修复配置文件路径查找
+          CONFIG_PATHS=(
+            "$CONFIG_FILE"
+            "configs/$CONFIG_FILE"
+            "../$CONFIG_FILE"
+            "../configs/$CONFIG_FILE"
+          )
+          
+          CONFIG_FOUND=""
+          for path in "${CONFIG_PATHS[@]}"; do
+            if [ -f "$path" ]; then
+              CONFIG_FOUND="$path"
+              echo "✅ 找到配置文件: $path"
+              break
+            fi
+          done
+          
+          if [ -z "$CONFIG_FOUND" ]; then
             echo "❌ 配置文件不存在: $CONFIG_FILE"
             echo "🔍 可用的配置文件:"
-            find ../firmware-config/configs -name ".config_*" 2>/dev/null | head -10 || echo "无配置文件"
+            find . -name ".config_*" 2>/dev/null | head -10 || echo "无配置文件"
             exit 1
           fi
           
           # 备份原始配置
-          cp "$CONFIG_FILE" .config
-          echo "✅ 配置应用完成: $(basename $CONFIG_FILE)"
+          cp "$CONFIG_FOUND" .config
+          echo "✅ 配置应用完成: $(basename $CONFIG_FOUND)"
           
           # 配置验证
           echo "🔍 配置验证..."
@@ -629,55 +677,73 @@ jobs:
           cd ${{ env.SOURCE_DIR }}
           echo "处理智能自定义功能..."
           
+          # 修复自定义功能路径查找
+          CUSTOM_PATHS=(
+            "custom-features"
+            "../custom-features"
+            "configs/custom-features"
+            "../configs/custom-features"
+          )
+          
           # 预编译IPK包处理
-          IPK_DIR="../firmware-config/custom-features/prebuilt-ipks"
-          if [ -d "$IPK_DIR" ]; then
-            echo "📦 处理预编译IPK包..."
-            IPK_COUNT=$(find "$IPK_DIR" -name "*.ipk" -type f | wc -l)
-            if [ "$IPK_COUNT" -gt 0 ]; then
-              mkdir -p package/base-files/files/usr/lib/opkg/custom
-              find "$IPK_DIR" -name "*.ipk" -exec cp {} package/base-files/files/usr/lib/opkg/custom/ \;
-              echo "✅ 已复制 $IPK_COUNT 个IPK包"
-              
-              # 验证IPK包
-              echo "🔍 验证IPK包..."
-              for ipk in package/base-files/files/usr/lib/opkg/custom/*.ipk; do
-                if [ -f "$ipk" ]; then
-                  ipk_size=$(stat -c%s "$ipk")
-                  if [ "$ipk_size" -gt 1000 ]; then
-                    echo "✅ $(basename $ipk): 有效 ($ipk_size 字节)"
-                  else
-                    echo "⚠️ $(basename $ipk): 文件过小，可能损坏"
+          IPK_FOUND=false
+          for base_path in "${CUSTOM_PATHS[@]}"; do
+            IPK_DIR="$base_path/prebuilt-ipks"
+            if [ -d "$IPK_DIR" ]; then
+              echo "📦 处理预编译IPK包..."
+              IPK_COUNT=$(find "$IPK_DIR" -name "*.ipk" -type f | wc -l)
+              if [ "$IPK_COUNT" -gt 0 ]; then
+                mkdir -p package/base-files/files/usr/lib/opkg/custom
+                find "$IPK_DIR" -name "*.ipk" -exec cp {} package/base-files/files/usr/lib/opkg/custom/ \;
+                echo "✅ 已复制 $IPK_COUNT 个IPK包"
+                
+                # 验证IPK包
+                echo "🔍 验证IPK包..."
+                for ipk in package/base-files/files/usr/lib/opkg/custom/*.ipk; do
+                  if [ -f "$ipk" ]; then
+                    ipk_size=$(stat -c%s "$ipk")
+                    if [ "$ipk_size" -gt 1000 ]; then
+                      echo "✅ $(basename $ipk): 有效 ($ipk_size 字节)"
+                    else
+                      echo "⚠️ $(basename $ipk): 文件过小，可能损坏"
+                    fi
                   fi
-                fi
-              done
-            else
-              echo "ℹ️ 无IPK包文件"
+                done
+                IPK_FOUND=true
+                break
+              fi
             fi
-          else
-            echo "ℹ️ 无IPK包目录"
+          done
+          
+          if [ "$IPK_FOUND" = "false" ]; then
+            echo "ℹ️ 无IPK包目录或文件"
           fi
           
           # 自定义脚本处理
-          SCRIPTS_DIR="../firmware-config/custom-features/scripts"
-          if [ -d "$SCRIPTS_DIR" ]; then
-            echo "📜 处理自定义脚本..."
-            SCRIPT_COUNT=$(find "$SCRIPTS_DIR" -name "*.sh" -type f | wc -l)
-            if [ "$SCRIPT_COUNT" -gt 0 ]; then
-              for script in $(find "$SCRIPTS_DIR" -name "*.sh" -type f | sort); do
-                echo "▶️ 执行脚本: $(basename $script)"
-                chmod +x "$script"
-                if timeout 600 bash "$script"; then
-                  echo "✅ 脚本执行成功: $(basename $script)"
-                else
-                  echo "⚠️ 脚本执行失败或超时: $(basename $script)"
-                fi
-              done
-            else
-              echo "ℹ️ 无脚本文件"
+          SCRIPTS_FOUND=false
+          for base_path in "${CUSTOM_PATHS[@]}"; do
+            SCRIPTS_DIR="$base_path/scripts"
+            if [ -d "$SCRIPTS_DIR" ]; then
+              echo "📜 处理自定义脚本..."
+              SCRIPT_COUNT=$(find "$SCRIPTS_DIR" -name "*.sh" -type f | wc -l)
+              if [ "$SCRIPT_COUNT" -gt 0 ]; then
+                for script in $(find "$SCRIPTS_DIR" -name "*.sh" -type f | sort); do
+                  echo "▶️ 执行脚本: $(basename $script)"
+                  chmod +x "$script"
+                  if timeout 600 bash "$script"; then
+                    echo "✅ 脚本执行成功: $(basename $script)"
+                  else
+                    echo "⚠️ 脚本执行失败或超时: $(basename $script)"
+                  fi
+                done
+                SCRIPTS_FOUND=true
+                break
+              fi
             fi
-          else
-            echo "ℹ️ 无脚本目录"
+          done
+          
+          if [ "$SCRIPTS_FOUND" = "false" ]; then
+            echo "ℹ️ 无脚本目录或文件"
           fi
           
           echo "✅ 自定义功能处理完成"
