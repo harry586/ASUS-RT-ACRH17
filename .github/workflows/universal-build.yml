@@ -65,46 +65,34 @@ jobs:
           path: firmware-config
 
       - name: 💾 智能系统资源分析
-  timeout-minutes: 2
-  run: |
-    echo "=== 智能系统资源分析 ==="
-    echo "📊 磁盘空间:"
-    df -h | grep -E "Filesystem|/dev/root|/dev/sda"
-    echo ""
-    echo "💻 CPU 信息:"
-    echo "核心数: $(nproc)"
-    echo "架构: $(uname -m)"
-    echo "CPU 型号: $(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')"
-    echo ""
-    echo "🧠 内存信息:"
-    free -h
-    echo ""
-    echo "📁 目录空间估算:"
-    # 快速估算，不深入扫描
-    for dir in /tmp /home/runner /opt /var /usr; do
-      if [ -d "$dir" ]; then
-        size=$(timeout 2s du -s "$dir" 2>/dev/null | cut -f1 2>/dev/null || echo "未知")
-        if [ "$size" != "未知" ] && [ -n "$size" ]; then
-          # 将 KB 转换为 MB/GB
-          if [ "$size" -gt 1048576 ]; then
-            human_size=$(echo "scale=2; $size / 1048576" | bc)GB
-          elif [ "$size" -gt 1024 ]; then
-            human_size=$(echo "scale=2; $size / 1024" | bc)MB
-          else
-            human_size="${size}KB"
-          fi
-          echo "  $dir: ~$human_size"
-        else
-          echo "  $dir: 扫描跳过"
-        fi
-      else
-        echo "  $dir: 不存在"
-      fi
-    done
-    echo ""
-    echo "🔄 交换空间: $(swapon --show | wc -l 2>/dev/null || echo 0) 个交换文件"
-    echo ""
-    echo "✅ 资源分析完成 - 继续编译流程"
+        timeout-minutes: 2
+        run: |
+          echo "=== 智能系统资源分析 ==="
+          echo "📊 磁盘空间:"
+          df -h | grep -E "Filesystem|/dev/root|/dev/sda"
+          echo ""
+          echo "💻 CPU 信息:"
+          echo "核心数: $(nproc)"
+          echo "架构: $(uname -m)"
+          echo "CPU 型号: $(grep 'model name' /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')"
+          echo ""
+          echo "🧠 内存信息:"
+          free -h
+          echo ""
+          echo "📁 关键目录状态:"
+          for dir in /tmp /home/runner /opt /var /usr; do
+            if [ -d "$dir" ]; then
+              mount_point=$(df "$dir" 2>/dev/null | awk 'NR==2 {print $6}')
+              usage=$(df -h "$dir" 2>/dev/null | awk 'NR==2 {print $5}')
+              echo "  $dir: 挂载点=$mount_point, 使用率=$usage"
+            else
+              echo "  $dir: 目录不存在"
+            fi
+          done
+          echo ""
+          echo "🔄 交换空间: $(swapon --show | wc -l 2>/dev/null || echo 0) 个交换文件"
+          echo ""
+          echo "✅ 资源分析完成 - 系统就绪"
 
       - name: 🔧 全面工作环境设置
         run: |
