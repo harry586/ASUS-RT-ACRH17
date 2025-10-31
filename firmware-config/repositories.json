@@ -3,7 +3,7 @@
     "immortalwrt": {
       "url": "https://github.com/immortalwrt/immortalwrt",
       "description": "ImmortalWrt 开源路由器系统 - 功能丰富的分支",
-      "stable_branches": ["openwrt-21.02", "openwrt-23.05", "master"],
+      "stable_branches": ["openwrt-21.02", "openwrt-23.05", "master", "main"],
       "recommended_branch": "openwrt-21.02",
       "features": {
         "custom_plugins_support": true,
@@ -15,7 +15,7 @@
     "openwrt": {
       "url": "https://github.com/openwrt/openwrt",
       "description": "OpenWrt 官方主线 - 稳定纯净",
-      "stable_branches": ["main", "v23.05.x", "v22.03.x"],
+      "stable_branches": ["main", "master", "v23.05.x", "v22.03.x"],
       "recommended_branch": "main",
       "features": {
         "custom_plugins_support": true,
@@ -27,7 +27,7 @@
     "lede": {
       "url": "https://github.com/coolsnowwolf/lede",
       "description": "Lean's LEDE 源码 - 集成丰富功能",
-      "stable_branches": ["master"],
+      "stable_branches": ["master", "main"],
       "recommended_branch": "master",
       "features": {
         "custom_plugins_support": true,
