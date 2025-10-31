@@ -21,7 +21,7 @@ on:
         description: 设备配置文件路径
         required: true
         type: string
-        default: configs/.config_rt-ac42u_immortalwrt
+        default: firmware-config/configs/.config_rt-ac42u_immortalwrt
       build_optimization:
         description: 编译优化策略
         required: true
@@ -62,7 +62,7 @@ jobs:
       - name: 📥 检出配置仓库
         uses: actions/checkout@v4
         with:
-          path: config-repo  # 明确指定检出目录
+          path: .  # 直接检出到当前目录
 
       - name: 💾 智能系统资源分析
         timeout-minutes: 2
@@ -141,18 +141,16 @@ jobs:
           
           # 检查目录结构
           echo "📁 配置文件目录结构:"
-          find config-repo -type f \( -name "*.json" -o -name ".config_*" \) 2>/dev/null | head -10 || echo "无配置文件"
+          find . -type f \( -name "*.json" -o -name ".config_*" \) 2>/dev/null | head -10 || echo "无配置文件"
           
-          # 重点检查 repositories.json - 修复文件路径查找
+          # 重点检查 repositories.json - 基于您的目录结构
           echo ""
           echo "🔍 检查 repositories.json 文件..."
           
-          # 多种可能的文件路径
+          # 基于您的目录结构查找
           REPO_JSON_PATHS=(
-            "config-repo/repositories.json"
-            "config-repo/configs/repositories.json"
-            "repositories.json"
-            "configs/repositories.json"
+            "firmware-config/repositories.json"
+            "./firmware-config/repositories.json"
           )
           
           REPO_JSON_FOUND=""
@@ -160,18 +158,24 @@ jobs:
             if [ -f "$path" ]; then
               REPO_JSON_FOUND="$path"
               echo "✅ 找到 repositories.json: $path"
+              echo "文件详细信息:"
+              ls -la "$path"
               break
+            else
+              echo "❌ 未找到: $path"
             fi
           done
           
           if [ -z "$REPO_JSON_FOUND" ]; then
             echo "❌ 错误: 未找到 repositories.json 文件"
+            echo ""
             echo "当前工作目录: $(pwd)"
+            echo ""
             echo "目录内容:"
             ls -la
             echo ""
-            echo "config-repo 目录内容:"
-            ls -la config-repo/ 2>/dev/null || echo "config-repo 目录不存在"
+            echo "firmware-config 目录内容:"
+            ls -la firmware-config/ 2>/dev/null || echo "firmware-config 目录不存在"
             echo ""
             echo "搜索的文件路径: ${REPO_JSON_PATHS[*]}"
             exit 1
@@ -481,16 +485,13 @@ jobs:
           CONFIG_FILE="${{ github.event.inputs.config_profile }}"
           echo "正在查找配置文件: $CONFIG_FILE"
           
-          # 修复配置文件路径查找 - 现在从config-repo目录查找
+          # 基于您的目录结构查找配置文件
           CONFIG_PATHS=(
-            "config-repo/$CONFIG_FILE"
-            "config-repo/configs/$CONFIG_FILE"
-            "../config-repo/$CONFIG_FILE"
-            "../config-repo/configs/$CONFIG_FILE"
             "$CONFIG_FILE"
-            "configs/$CONFIG_FILE"
             "../$CONFIG_FILE"
-            "../configs/$CONFIG_FILE"
+            "../../$CONFIG_FILE"
+            "firmware-config/configs/$(basename $CONFIG_FILE)"
+            "../firmware-config/configs/$(basename $CONFIG_FILE)"
           )
           
           CONFIG_FOUND=""
@@ -509,26 +510,23 @@ jobs:
           if [ -z "$CONFIG_FOUND" ]; then
             echo "❌ 错误: 配置文件 '$CONFIG_FILE' 不存在"
             echo ""
-            echo "🔍 当前工作目录: $(pwd)"
+            echo "当前工作目录: $(pwd)"
             echo ""
-            echo "📁 目录结构详情:"
+            echo "目录结构详情:"
             echo "当前目录:"
             ls -la
-            echo ""
-            echo "config-repo 目录:"
-            ls -la config-repo/ 2>/dev/null || echo "config-repo 目录不存在"
-            echo ""
-            echo "config-repo/configs 目录:"
-            ls -la config-repo/configs/ 2>/dev/null || echo "config-repo/configs 目录不存在"
             echo ""
             echo "上级目录:"
             ls -la ../
             echo ""
+            echo "上上级目录:"
+            ls -la ../../
+            echo ""
             echo "所有可用的配置文件:"
             find . -name ".config_*" -o -name "*.config" 2>/dev/null | head -20 || echo "无配置文件"
             echo ""
-            echo "config-repo 中的所有文件:"
-            find config-repo -type f 2>/dev/null | head -20 || echo "config-repo 中无文件"
+            echo "firmware-config/configs 目录中的文件:"
+            ls -la firmware-config/configs/ 2>/dev/null || echo "firmware-config/configs 目录不存在"
             exit 1
           fi
           
@@ -709,14 +707,11 @@ jobs:
           cd ${{ env.SOURCE_DIR }}
           echo "处理智能自定义功能..."
           
-          # 修复自定义功能路径查找 - 现在从config-repo目录查找
+          # 基于您的目录结构查找自定义功能
           CUSTOM_PATHS=(
-            "config-repo/custom-features"
-            "../config-repo/custom-features"
-            "custom-features"
-            "../custom-features"
-            "configs/custom-features"
-            "../configs/custom-features"
+            "firmware-config/custom-features"
+            "../firmware-config/custom-features"
+            "../../firmware-config/custom-features"
           )
           
           # 预编译IPK包处理
