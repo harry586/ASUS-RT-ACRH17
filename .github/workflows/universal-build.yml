@@ -130,11 +130,48 @@ jobs:
             fi
           done
           
+          # 修复交换文件创建问题
           echo "🔄 在 /mnt 创建高性能交换文件..."
+          # 首先检查并清理任何现有的交换文件
+          if [ -f /mnt/swapfile ]; then
+            echo "🔍 发现现有交换文件，正在清理..."
+            sudo swapoff /mnt/swapfile 2>/dev/null || true
+            sudo rm -f /mnt/swapfile 2>/dev/null || true
+            sleep 2  # 等待系统释放资源
+          fi
+          
+          # 检查是否有进程占用交换文件
+          echo "🔍 检查交换文件占用情况..."
+          if sudo lsof /mnt/swapfile 2>/dev/null; then
+            echo "⚠️ 有进程占用交换文件，等待释放..."
+            sleep 5
+            sudo lsof /mnt/swapfile 2>/dev/null && echo "❌ 仍有进程占用，强制清理" || echo "✅ 已释放"
+          fi
+          
+          # 确保文件被完全删除
+          sudo rm -f /mnt/swapfile
+          
+          # 创建新的交换文件
+          echo "📝 创建新的交换文件..."
           sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=8192 status=progress
+          if [ $? -ne 0 ]; then
+            echo "❌ 交换文件创建失败，尝试备用方法..."
+            # 备用方法：使用 fallocate
+            sudo fallocate -l 8G /mnt/swapfile
+            if [ $? -ne 0 ]; then
+              echo "⚠️ fallocate 失败，尝试 truncate..."
+              sudo truncate -s 8G /mnt/swapfile
+            fi
+          fi
+          
+          # 设置权限和启用交换
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
+          
+          echo "📊 交换空间状态:"
+          sudo swapon --show
+          free -h
           
           echo "⚡ 优化系统性能设置..."
           ulimit -n 65536
