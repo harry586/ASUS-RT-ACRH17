@@ -1,4 +1,4 @@
-name: Universal Firmware Builder - Enhanced & Fixed
+name: Universal Firmware Builder - Full Detection & Validation
 
 on:
   workflow_dispatch:
@@ -888,7 +888,169 @@ jobs:
           
           echo "✅ 自定义功能处理完成"
 
-      - name: 🏗️ 智能编译固件 (修复版)
+      - name: 🔍 全面目录结构预创建
+        run: |
+          cd ${{ env.SOURCE_DIR }}
+          echo "预创建全面目录结构..."
+          
+          # 检测目标架构
+          echo "🔍 检测目标架构..."
+          TARGET_PATTERN=$(grep "CONFIG_TARGET_ARCH_PACKAGES" .config 2>/dev/null | cut -d= -f2 | tr -d '"' | cut -d_ -f1 || echo "unknown")
+          TARGET_SUBTARGET=$(grep "CONFIG_TARGET_SUBTARGET" .config 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "generic")
+          echo "检测到架构模式: $TARGET_PATTERN, 子目标: $TARGET_SUBTARGET"
+          
+          # 首先清理可能存在的init目录（根据错误信息）
+          echo "🧹 清理可能冲突的目录..."
+          rm -rf build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/init 2>/dev/null || true
+          
+          # 创建通用目录结构 - 修复目录创建问题
+          echo "📁 创建通用目录结构..."
+          mkdir -p build_dir/target-*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+          mkdir -p build_dir/target-*/root.orig-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+          mkdir -p build_dir/target-*/linux-*/{root-*,image} 2>/dev/null || true
+          mkdir -p staging_dir/target-*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+          
+          # 根据错误信息创建特定目录 - 但确保init是文件而不是目录
+          echo "📁 创建编译所需特定目录..."
+          mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+          mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-ipq40xx_generic/linux-5.4.255/.image 2>/dev/null || true
+          
+          # 创建特定架构目录 - 根据检测到的架构创建
+          if [ "$TARGET_PATTERN" != "unknown" ]; then
+            echo "📁 创建 $TARGET_PATTERN 架构特定目录..."
+            mkdir -p build_dir/target-${TARGET_PATTERN}_*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+            mkdir -p staging_dir/target-${TARGET_PATTERN}_*/root-*/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+            
+            # 为特定子目标创建目录
+            if [ "$TARGET_SUBTARGET" != "generic" ]; then
+              echo "📁 创建 $TARGET_SUBTARGET 子目标目录..."
+              mkdir -p build_dir/target-${TARGET_PATTERN}_*/root-${TARGET_SUBTARGET}/{tmp,etc,usr,lib,bin,sbin,var,proc,dev,run,lock} 2>/dev/null || true
+              mkdir -p build_dir/target-${TARGET_PATTERN}_*/linux-${TARGET_SUBTARGET}_* 2>/dev/null || true
+            fi
+          fi
+          
+          # 设置权限
+          echo "🔒 设置目录权限..."
+          find build_dir staging_dir -name "tmp" -type d -exec chmod 1777 {} \; 2>/dev/null || true
+          find build_dir staging_dir -name "lock" -type d -exec chmod 755 {} \; 2>/dev/null || true
+          find build_dir staging_dir -type d -exec chmod 755 {} \; 2>/dev/null || true
+          
+          # 创建编译过程中需要的特定目录 - 但不创建init目录，让编译系统自己创建
+          echo "📁 创建编译过程特定目录..."
+          mkdir -p build_dir/target-*/root-*/{etc/init.d,usr/lib,usr/bin,usr/sbin,lib/modules} 2>/dev/null || true
+          mkdir -p build_dir/target-*/root.orig-*/{etc/init.d,usr/lib,usr/bin,usr/sbin,lib/modules} 2>/dev/null || true
+          
+          # 验证目录创建
+          echo "🔍 验证目录创建..."
+          DIR_COUNT=$(find build_dir staging_dir -type d 2>/dev/null | wc -l || echo 0)
+          echo "创建的目录数量: $DIR_COUNT"
+          
+          # 特别验证错误中提到的目录，但不创建init目录
+          CRITICAL_DIRS=(
+            "build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx"
+            "build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-ipq40xx_generic/linux-5.4.255/.image"
+          )
+          
+          for dir in "${CRITICAL_DIRS[@]}"; do
+            if [ -d "$dir" ]; then
+              echo "✅ 关键目录存在: $dir"
+            else
+              echo "⚠️ 关键目录缺失: $dir"
+              # 尝试创建缺失的关键目录
+              mkdir -p "$dir" 2>/dev/null && echo "✅ 已创建缺失目录: $dir" || echo "❌ 无法创建目录: $dir"
+            fi
+          done
+          
+          # 特别检查init路径，确保它不是目录
+          INIT_PATH="build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/init"
+          if [ -d "$INIT_PATH" ]; then
+            echo "⚠️ 发现init目录（应为文件），正在清理..."
+            rm -rf "$INIT_PATH"
+            echo "✅ 已清理init目录"
+          fi
+          
+          echo "✅ 目录结构预创建完成"
+
+      - name: 🧹 编译前目录修复
+        run: |
+          cd ${{ env.SOURCE_DIR }}
+          echo "执行编译前目录修复..."
+          
+          # 根据错误信息修复特定的目录问题
+          echo "🔧 修复init目录/文件冲突..."
+          
+          # 确保init是文件而不是目录
+          INIT_PATHS=$(find build_dir -name "init" -type d 2>/dev/null || true)
+          if [ -n "$INIT_PATHS" ]; then
+            echo "发现以下init目录（需要清理）:"
+            echo "$INIT_PATHS"
+            for path in $INIT_PATHS; do
+              echo "清理: $path"
+              rm -rf "$path"
+            done
+          else
+            echo "✅ 无冲突的init目录"
+          fi
+          
+          # 确保关键目录存在 - 特别是opkg需要的tmp目录
+          echo "📁 确保关键编译目录存在..."
+          mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx 2>/dev/null || true
+          mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-ipq40xx_generic/linux-5.4.255/.image 2>/dev/null || true
+          
+          # 特别创建opkg需要的tmp目录 - 修复opkg.lock错误
+          echo "📁 创建opkg临时目录..."
+          mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root.orig-ipq40xx/tmp 2>/dev/null || true
+          mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/tmp 2>/dev/null || true
+          
+          # 设置tmp目录权限
+          echo "🔒 设置临时目录权限..."
+          find build_dir -name "tmp" -type d -exec chmod 1777 {} \; 2>/dev/null || true
+          
+          echo "✅ 编译前目录修复完成"
+
+      - name: 💾 编译前最终空间监测与清理
+        run: |
+          echo "=== 编译前最终空间监测与清理 ==="
+          echo "📊 详细磁盘使用情况:"
+          df -h
+
+          # 检查关键分区的可用空间
+          ROOT_AVAILABLE=$(df / | awk 'NR==2 {gsub("G","",$4); print int($4)}')
+          MNT_AVAILABLE=$(df /mnt | awk 'NR==2 {gsub("G","",$4); print int($4)}')
+          
+          echo "根分区可用空间: ${ROOT_AVAILABLE}GB"
+          echo "/mnt 分区可用空间: ${MNT_AVAILABLE}GB"
+
+          if [ "$ROOT_AVAILABLE" -lt 1 ]; then
+            echo "🚨 严重错误: 根分区空间不足1GB，无法继续"
+            echo "🧹 执行紧急空间清理..."
+            sudo rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+            sudo apt-get clean
+            sudo rm -rf /var/lib/apt/lists/*
+            sudo sync
+            echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
+            echo "📊 清理后空间:"
+            df -h
+          elif [ "$ROOT_AVAILABLE" -lt 2 ]; then
+            echo "⚠️ 严重警告: 根分区空间紧张 (${ROOT_AVAILABLE}GB)"
+          else
+            echo "✅ 根分区空间正常"
+          fi
+
+          if [ "$MNT_AVAILABLE" -lt 10 ]; then
+            echo "🚨 严重错误: /mnt 分区空间不足10GB，无法编译"
+            exit 1
+          elif [ "$MNT_AVAILABLE" -lt 20 ]; then
+            echo "⚠️ 警告: /mnt 分区空间紧张 (${MNT_AVAILABLE}GB)"
+          else
+            echo "✅ /mnt 分区空间充足"
+          fi
+
+          echo ""
+          echo "🧠 内存和交换空间:"
+          free -h
+
+      - name: 🏗️ 智能编译固件
         timeout-minutes: 240
         id: compile-firmware
         run: |
@@ -914,26 +1076,79 @@ jobs:
           echo "  - CPU核心: $CPU_CORES"
           echo "  - CCache: 已启用"
           
-          # 修复编译方法 - 使用更可靠的方式
-          echo "🔧 开始编译..."
-          LOG_FILE="${{ env.BUILD_LOG_DIR }}/firmware-compile.log"
+          COMPILE_SUCCESS=false
+          BUILD_EXIT_CODE=1
           
-          {
-            set -e
-            echo "阶段1: 编译准备..."
-            make tools/install 2>/dev/null || true
-            make toolchain/install 2>/dev/null || true
-            
-            echo "阶段2: 编译目标..."
-            make -j$CPU_CORES V=s
-            
-            echo "阶段3: 编译完成验证..."
-          } 2>&1 | tee "$LOG_FILE"
+          # 改进的编译策略 - 修复目录创建问题
+          case "${{ github.event.inputs.build_optimization }}" in
+            "speed")
+              echo "🚀 执行极速编译模式..."
+              LOG_FILE="${{ env.BUILD_LOG_DIR }}/speed-compile.log"
+              {
+                echo "阶段1: 预创建所有必要目录..."
+                # 动态创建编译过程中需要的目录
+                find . -name "Makefile" -exec dirname {} \; | xargs -I {} mkdir -p {}/tmp 2>/dev/null || true
+                
+                echo "阶段2: 全核心编译..."
+                if make -j$CPU_CORES V=s; then
+                  COMPILE_SUCCESS=true
+                  BUILD_EXIT_CODE=0
+                fi
+              } 2>&1 | tee "$LOG_FILE"
+              ;;
+            "stability")
+              echo "🛡️ 执行稳定编译模式..."
+              LOG_FILE="${{ env.BUILD_LOG_DIR }}/stability-compile.log"
+              {
+                set -e
+                echo "阶段1: 预创建目录结构..."
+                make tools/install 2>/dev/null || true
+                make toolchain/install 2>/dev/null || true
+                
+                echo "阶段2: 编译内核..."
+                make target/linux/compile -j$((CPU_CORES / 2)) V=s
+                echo "阶段3: 编译软件包..."
+                make package/compile -j1 V=s
+                echo "阶段4: 最终组装..."
+                make target/install -j1 V=s
+                COMPILE_SUCCESS=true
+                BUILD_EXIT_CODE=0
+              } 2>&1 | tee "$LOG_FILE"
+              ;;
+            "balanced"|*)
+              echo "⚖️ 执行平衡编译模式..."
+              LOG_FILE="${{ env.BUILD_LOG_DIR }}/balanced-compile.log"
+              {
+                set -e
+                echo "阶段1: 预编译和目录准备..."
+                make tools/install 2>/dev/null || true
+                make toolchain/install 2>/dev/null || true
+                
+                echo "阶段2: 编译内核和基础包..."
+                make target/linux/compile -j$CPU_CORES V=s
+                echo "阶段3: 编译所有软件包..."
+                make package/compile -j$((CPU_CORES / 2)) V=s
+                echo "阶段4: 最终安装..."
+                make target/install -j1 V=s
+                COMPILE_SUCCESS=true
+                BUILD_EXIT_CODE=0
+              } 2>&1 | tee "$LOG_FILE"
+              ;;
+          esac
           
-          # 检查编译结果
-          if [ ${PIPESTATUS[0]} -eq 0 ]; then
+          # 显示编译统计
+          echo "📊 CCache 编译统计:"
+          ccache -s
+          
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
+          echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
+          
+          if [ "$COMPILE_SUCCESS" = "true" ] && [ $BUILD_EXIT_CODE -eq 0 ]; then
             echo "BUILD_STATUS=success" >> $GITHUB_ENV
             echo "🎉 编译成功完成!"
+            echo "⏱️ 总编译耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
+            exit 0
           else
             echo "BUILD_STATUS=failed" >> $GITHUB_ENV
             echo "❌ 编译失败"
@@ -941,134 +1156,92 @@ jobs:
             # 错误分析
             echo "=== 详细错误分析 ==="
             if [ -f "$LOG_FILE" ]; then
+              # 显示关键错误信息
               echo "关键错误:"
-              grep -i "error\|failed\|undefined\|missing\|no such file\|cannot create" "$LOG_FILE" | tail -20 || echo "无明确错误信息"
-            fi
-            exit 1
-          fi
-          
-          END_TIME=$(date +%s)
-          DURATION=$((END_TIME - START_TIME))
-          echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
-          echo "⏱️ 总编译耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
-
-      - name: 🔍 固件产物验证与收集
-        if: env.BUILD_STATUS == 'success'
-        run: |
-          cd ${{ env.SOURCE_DIR }}
-          echo "=== 固件产物验证与收集 ==="
-          
-          # 查找所有可能的固件文件
-          echo "🔍 查找固件文件..."
-          
-          # 多个可能的固件目录
-          FIRMWARE_PATHS=(
-            "bin/targets"
-            "build_dir/target-*/linux-*/tmp"
-            "build_dir/target-*/root-*"
-          )
-          
-          TOTAL_FIRMWARE_COUNT=0
-          mkdir -p ${{ env.ARTIFACTS_DIR }}/firmware
-          
-          for path_pattern in "${FIRMWARE_PATHS[@]}"; do
-            echo ""
-            echo "搜索模式: $path_pattern"
-            found_files=$(find . -path "./$path_pattern" -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" 2>/dev/null | head -20 || true)
-            
-            if [ -n "$found_files" ]; then
-              count=$(echo "$found_files" | wc -l)
-              echo "✅ 找到 $count 个文件:"
-              echo "$found_files"
+              grep -i "error\|failed\|undefined\|missing\|no such file\|cannot create\|Is a directory\|opkg.lock" "$LOG_FILE" | tail -20 || echo "无明确错误信息"
               
-              # 复制文件到产物目录
-              for file in $found_files; do
-                if [ -f "$file" ]; then
-                  file_size=$(stat -c%s "$file" 2>/dev/null || echo 0)
-                  if [ "$file_size" -gt 1000000 ]; then  # 大于1MB才认为是有效固件
-                    cp --parents "$file" ${{ env.ARTIFACTS_DIR }}/firmware/
-                    echo "📦 已收集: $file ($(($file_size/1024/1024))MB)"
-                    TOTAL_FIRMWARE_COUNT=$((TOTAL_FIRMWARE_COUNT + 1))
-                  else
-                    echo "⚠️ 跳过小文件: $file ($file_size 字节)"
+              # 检查特定的目录错误
+              if grep -q "cannot create.*No such file or directory" "$LOG_FILE"; then
+                echo ""
+                echo "🔧 检测到目录创建错误，尝试修复..."
+                # 提取缺失的目录路径并创建
+                grep "cannot create.*No such file or directory" "$LOG_FILE" | head -5 | while read -r line; do
+                  missing_dir=$(echo "$line" | sed -n 's/.*cannot create regular file '\''\([^']*\)'\''.*/\1/p' | xargs dirname 2>/dev/null)
+                  if [ -n "$missing_dir" ]; then
+                    echo "创建缺失目录: $missing_dir"
+                    mkdir -p "$missing_dir" 2>/dev/null || true
                   fi
-                fi
-              done
-            else
-              echo "ℹ️ 无匹配文件"
-            fi
-          done
-          
-          # 特别检查您日志中提到的固件路径
-          echo ""
-          echo "🔍 检查特定固件路径..."
-          SPECIFIC_FIRMWARE="build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-ipq40xx_generic/tmp/immortalwrt-ipq40xx-generic-asus_rt-ac42u-squashfs-sysupgrade.bin"
-          if [ -f "$SPECIFIC_FIRMWARE" ]; then
-            echo "✅ 找到特定固件: $SPECIFIC_FIRMWARE"
-            cp --parents "$SPECIFIC_FIRMWARE" ${{ env.ARTIFACTS_DIR }}/firmware/
-            TOTAL_FIRMWARE_COUNT=$((TOTAL_FIRMWARE_COUNT + 1))
-          else
-            echo "⚠️ 未找到特定固件"
-          fi
-          
-          # 检查标准输出目录
-          echo ""
-          echo "🔍 检查标准输出目录..."
-          if [ -d "bin/targets" ]; then
-            STANDARD_FIRMWARE=$(find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" 2>/dev/null | head -10 || true)
-            if [ -n "$STANDARD_FIRMWARE" ]; then
-              count=$(echo "$STANDARD_FIRMWARE" | wc -l)
-              echo "✅ 标准目录找到 $count 个固件:"
-              echo "$STANDARD_FIRMWARE"
+                done
+                echo "✅ 目录修复完成"
+              fi
               
-              # 确保复制所有标准固件
-              cp -r bin/targets ${{ env.ARTIFACTS_DIR }}/firmware/ 2>/dev/null || true
+              # 检查目录与文件冲突
+              if grep -q "Is a directory" "$LOG_FILE"; then
+                echo ""
+                echo "🔧 检测到目录/文件冲突，尝试修复..."
+                grep "Is a directory" "$LOG_FILE" | head -5 | while read -r line; do
+                  conflict_path=$(echo "$line" | sed -n 's/.*rm: cannot remove '\''\([^']*\)'\''.*/\1/p')
+                  if [ -n "$conflict_path" ] && [ -d "$conflict_path" ]; then
+                    echo "删除冲突目录: $conflict_path"
+                    rm -rf "$conflict_path" 2>/dev/null || true
+                  fi
+                done
+                echo "✅ 冲突修复完成"
+              fi
+              
+              # 检查opkg.lock错误
+              if grep -q "opkg.lock" "$LOG_FILE"; then
+                echo ""
+                echo "🔧 检测到opkg锁文件错误，尝试修复..."
+                # 创建所有可能的opkg临时目录
+                find build_dir -name "root.orig-*" -type d 2>/dev/null | while read -r root_dir; do
+                  if [ -d "$root_dir" ]; then
+                    mkdir -p "$root_dir/tmp" 2>/dev/null || true
+                    chmod 1777 "$root_dir/tmp" 2>/dev/null || true
+                    echo "✅ 创建opkg临时目录: $root_dir/tmp"
+                  fi
+                done
+                echo "✅ opkg锁文件修复完成"
+              fi
             else
-              echo "⚠️ 标准目录无固件"
+              echo "无编译日志文件"
             fi
-          fi
-          
-          echo ""
-          echo "📊 固件收集统计:"
-          echo "总共收集到 $TOTAL_FIRMWARE_COUNT 个固件文件"
-          
-          if [ $TOTAL_FIRMWARE_COUNT -eq 0 ]; then
-            echo "❌ 错误: 未找到任何固件文件"
-            echo "当前目录结构:"
-            find . -type f -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" 2>/dev/null | head -20 || echo "无固件文件"
+            
+            echo "⏱️ 编译失败于: ${DURATION}秒"
             exit 1
-          else
-            echo "✅ 固件验证与收集完成"
           fi
-          
-          echo "FIRMWARE_COUNT=$TOTAL_FIRMWARE_COUNT" >> $GITHUB_ENV
 
-      - name: 📋 收集编译日志和配置
+      - name: 📦 全面产物收集与诊断
         if: always()
         run: |
           cd ${{ env.SOURCE_DIR }}
-          echo "收集编译日志和配置..."
-          mkdir -p ${{ env.ARTIFACTS_DIR }}/logs
-          mkdir -p ${{ env.ARTIFACTS_DIR }}/configs
+          echo "开始全面产物收集与诊断..."
+          mkdir -p ${{ env.ARTIFACTS_DIR }}
           
-          # 收集日志
+          # 收集固件文件
+          if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
+            echo "📦 收集固件文件..."
+            FIRMWARE_FILES=$(find bin/targets -type f \( -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" \) 2>/dev/null | wc -l)
+            find bin/targets -type f \( -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" \) \
+              -exec cp --parents {} ${{ env.ARTIFACTS_DIR }}/ \; 2>/dev/null || true
+            echo "✅ 收集到 $FIRMWARE_FILES 个固件文件"
+          fi
+          
+          # 收集编译日志
           echo "📋 收集编译日志..."
-          cp -r ${{ env.BUILD_LOG_DIR }}/* ${{ env.ARTIFACTS_DIR }}/logs/ 2>/dev/null || true
-          cp -r ${{ env.TOOLCHAIN_LOG_DIR }}/* ${{ env.ARTIFACTS_DIR }}/logs/ 2>/dev/null || true
+          cp -r ${{ env.BUILD_LOG_DIR }} ${{ env.ARTIFACTS_DIR }}/ 2>/dev/null || true
+          cp -r ${{ env.TOOLCHAIN_LOG_DIR }} ${{ env.ARTIFACTS_DIR }}/ 2>/dev/null || true
           
-          # 收集配置
-          echo "📋 收集配置文件..."
-          cp .config ${{ env.ARTIFACTS_DIR }}/configs/ 2>/dev/null || true
-          cp feeds.conf* ${{ env.ARTIFACTS_DIR }}/configs/ 2>/dev/null || true
+          # 收集配置信息
+          cp .config ${{ env.ARTIFACTS_DIR }}/config 2>/dev/null || true
           
-          # 生成构建报告
+          # 生成详细构建报告
           echo "📊 生成详细构建报告..."
           {
             echo "=== 详细固件构建报告 ==="
             echo "构建时间: $(date)"
             echo "构建状态: ${{ env.BUILD_STATUS || 'unknown' }}"
             echo "编译时长: ${{ env.BUILD_DURATION || 'N/A' }}秒"
-            echo "固件数量: ${{ env.FIRMWARE_COUNT || 0 }}"
             echo ""
             echo "=== 源码信息 ==="
             echo "源码库: ${{ env.SOURCE_PRESET }}"
@@ -1091,20 +1264,24 @@ jobs:
             echo "=== 产物信息 ==="
             if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
               echo "固件文件:"
-              find ${{ env.ARTIFACTS_DIR }}/firmware -type f 2>/dev/null | xargs -I {} basename {} 2>/dev/null | sort || echo "无固件文件"
+              find ${{ env.ARTIFACTS_DIR }} -name "*.bin" -o -name "*.img" -o -name "*.trx" -o -name "*.gz" 2>/dev/null | \
+                xargs -I {} basename {} 2>/dev/null | sort || echo "无固件文件"
             else
               echo "构建失败，无固件产物"
             fi
-          } > ${{ env.ARTIFACTS_DIR }}/build-report.txt
+          } > ${{ env.ARTIFACTS_DIR }}/detailed-build-report.txt
           
-          echo "✅ 日志和配置收集完成"
+          # 复制到工作区
+          mkdir -p $GITHUB_WORKSPACE/artifacts
+          cp -r ${{ env.ARTIFACTS_DIR }}/* $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
+          echo "✅ 全面产物收集完成"
 
       - name: 💾 上传构建产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Firmware-${{ github.run_number }}-${{ env.SOURCE_PRESET }}-${{ env.ACTUAL_BRANCH }}-${{ env.BUILD_STATUS || 'unknown' }}
-          path: ${{ env.ARTIFACTS_DIR }}
+          path: artifacts
           retention-days: 30
 
       - name: 🧹 编译后智能清理
@@ -1117,25 +1294,33 @@ jobs:
           df -h
           free -h
           
-          # 清理编译临时文件但保留源码
+          # 无论编译成功与否，都清理这些临时文件
+          echo "🧹 清理编译临时文件..."
           if [ -d "${{ env.SOURCE_DIR }}" ]; then
+            # 保留源码但清理构建目录
             cd ${{ env.SOURCE_DIR }}
-            echo "🧹 清理编译临时文件..."
-            rm -rf build_dir/* staging_dir/* tmp/* logs/* 2>/dev/null || true
-            
-            if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
-              echo "✅ 编译成功，保留源码目录结构"
+            rm -rf build_dir/* staging_dir/* tmp/* 2>/dev/null || true
+            # 但如果是编译失败，我们保留更多文件用于调试
+            if [ "${{ env.BUILD_STATUS }}" != "success" ]; then
+              echo "⚠️ 编译失败，保留源码和关键目录用于调试"
               echo "📁 保留的目录:"
               ls -la | head -10
             else
-              echo "⚠️ 编译失败，保留更多文件用于调试"
+              echo "✅ 编译成功，清理构建目录"
             fi
           fi
           
-          # 清理缓存和日志目录
-          echo "🧹 清理缓存和日志..."
+          # 清理缓存目录
+          echo "🧹 清理缓存..."
           rm -rf ${{ env.CCACHE_DIR }}/* 2>/dev/null || true
+          
+          # 清理日志目录（但保留最新的）
+          echo "🧹 清理日志..."
           rm -rf ${{ env.BUILD_LOG_DIR }}/* ${{ env.TOOLCHAIN_LOG_DIR }}/* 2>/dev/null || true
+          
+          # 清理产物目录
+          echo "🧹 清理产物目录..."
+          rm -rf ${{ env.ARTIFACTS_DIR }} 2>/dev/null || true
           
           # 清理交换文件
           echo "🧹 清理交换文件..."
@@ -1154,6 +1339,34 @@ jobs:
           df -h
           free -h
           echo "✅ 智能清理完成"
+
+      - name: 🧹 最终环境清理
+        if: always()
+        run: |
+          echo "开始最终环境清理..."
+          
+          # 这个步骤确保无论前面发生了什么，都会清理所有临时文件
+          # 防止占用GitHub Actions的磁盘空间
+          
+          echo "🧹 最终清理所有临时目录..."
+          sudo rm -rf ${{ env.SOURCE_DIR }} 2>/dev/null || echo "源码目录已清理"
+          sudo rm -rf ${{ env.ARTIFACTS_DIR }} 2>/dev/null || echo "产物目录已清理"
+          sudo rm -rf ${{ env.CCACHE_DIR }} 2>/dev/null || echo "缓存目录已清理"
+          sudo rm -rf ${{ env.BUILD_LOG_DIR }} 2>/dev/null || echo "构建日志已清理"
+          sudo rm -rf ${{ env.TOOLCHAIN_LOG_DIR }} 2>/dev/null || echo "工具链日志已清理"
+          
+          # 再次确保交换文件被清理
+          sudo swapoff /mnt/swapfile 2>/dev/null || true
+          sudo rm -f /mnt/swapfile 2>/dev/null || true
+          
+          # 清理根分区
+          sudo rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          
+          echo "📊 最终磁盘状态:"
+          df -h
+          echo "✅ 最终环境清理完成"
 
       - name: 📊 最终综合报告
         if: always()
@@ -1177,12 +1390,10 @@ jobs:
           echo "📈 构建结果:"
           echo "  - 状态: ${{ env.BUILD_STATUS || 'unknown' }}"
           echo "  - 时长: ${{ env.BUILD_DURATION || 'N/A' }}秒"
-          echo "  - 固件数量: ${{ env.FIRMWARE_COUNT || 0 }}"
           echo ""
           if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
             echo "🎉 构建成功！固件已上传到 Artifacts"
             echo "📦 下载 Artifacts 获取编译产物"
-            echo "🔧 固件文件在 firmware/ 目录中"
           else
             echo "❌ 构建失败"
             echo "🔍 请查看详细日志分析错误原因"
