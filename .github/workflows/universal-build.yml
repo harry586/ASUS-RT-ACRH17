@@ -875,6 +875,46 @@ jobs:
           
           echo "✅ 深度目录修复完成"
 
+      - name: 🛠️ 目标设备兼容性修复
+        run: |
+          cd ${{ env.SOURCE_DIR }}
+          echo "=== 目标设备兼容性修复 ==="
+          
+          echo "🔧 检查目标配置..."
+          if [ -f ".config" ]; then
+            echo "📋 当前目标配置:"
+            grep -E "CONFIG_TARGET_|CONFIG_TARGET_ARCH_PACKAGES" .config | head -10
+          fi
+          
+          echo "🔧 修复可能的目标设备问题..."
+          # 检查并修复目标设备配置
+          if grep -q "ipq40xx" .config 2>/dev/null; then
+            echo "🎯 检测到 ipq40xx 目标，应用特定修复..."
+            # 确保ipq40xx相关配置正确
+            if ! grep -q "CONFIG_TARGET_ipq40xx_generic_DEVICE" .config 2>/dev/null; then
+              echo "🔧 添加缺失的ipq40xx设备配置..."
+              echo "# CONFIG_TARGET_ipq40xx_generic_DEVICE is not set" >> .config
+            fi
+          fi
+          
+          echo "🔧 运行最终配置检查..."
+          # 确保配置完整
+          if ! make defconfig >/dev/null 2>&1; then
+            echo "⚠️ 配置检查失败，尝试修复..."
+            # 备份当前配置
+            cp .config .config.backup
+            # 尝试使用默认配置
+            if make defconfig; then
+              echo "✅ 使用默认配置修复成功"
+            else
+              echo "❌ 配置修复失败"
+            fi
+          else
+            echo "✅ 配置检查通过"
+          fi
+          
+          echo "✅ 目标设备兼容性修复完成"
+
       - name: 🏗️ 智能编译固件
         timeout-minutes: 240
         id: compile-firmware
@@ -903,6 +943,7 @@ jobs:
           echo "🔧 开始编译..."
           LOG_FILE="${{ env.BUILD_LOG_DIR }}/firmware-compile.log"
           ERROR_LOG_FILE="${{ env.BUILD_LOG_DIR }}/firmware-errors.log"
+          TARGET_INSTALL_LOG="${{ env.BUILD_LOG_DIR }}/target-install.log"
           
           # 分阶段编译以提高稳定性
           {
@@ -921,43 +962,52 @@ jobs:
               make package/compile -j$BUILD_JOBS V=sc || true
             }
             
-            echo "阶段4: 动态目录修复..."
-            # 在安装前再次检查并创建必要的目录
-            echo "🔧 动态创建缺失的目录..."
-            find build_dir staging_dir -type d -name "root.orig-*" 2>/dev/null | while read root_dir; do
-              if [ ! -d "$root_dir/tmp" ]; then
-                mkdir -p "$root_dir/tmp"
-                echo "✅ 动态创建: $root_dir/tmp"
-              fi
-              if [ ! -d "$root_dir/usr/lib/opkg" ]; then
-                mkdir -p "$root_dir/usr/lib/opkg"
-                echo "✅ 动态创建: $root_dir/usr/lib/opkg"
-              fi
-            done
-            
-            echo "阶段5: 最终安装和固件生成..."
-            # 修复可能的目录权限问题
-            sudo chmod -R 755 build_dir/ staging_dir/ 2>/dev/null || true
-            
-            # 使用更健壮的安装方法
-            echo "🔧 尝试并行安装..."
+            echo "阶段4: 包安装..."
+            # 先尝试并行安装
+            echo "🔧 尝试并行包安装..."
             if ! make package/install -j$BUILD_JOBS V=s; then
-              echo "⚠️ 并行安装失败，尝试单线程安装..."
+              echo "⚠️ 并行包安装失败，尝试单线程..."
               if ! make package/install -j1 V=s; then
                 echo "❌ 包安装失败，记录错误但继续..."
                 grep -i "error\|failed" $LOG_FILE | tail -20 > $ERROR_LOG_FILE 2>/dev/null || true
               fi
             fi
             
-            echo "🔧 尝试目标安装..."
-            if ! make target/install -j1 V=s; then
-              echo "❌ 目标安装失败，但尝试继续生成固件..."
-              # 即使目标安装失败，也尝试生成固件
-              if make -j1 V=s 2>/dev/null; then
-                echo "✅ 固件生成成功"
+            echo "阶段5: 目标安装（关键阶段）..."
+            # 单独处理目标安装，因为这是失败点
+            echo "🎯 开始目标安装阶段..."
+            if make target/install -j1 V=s 2>&1 | tee "$TARGET_INSTALL_LOG"; then
+              echo "✅ 目标安装成功"
+            else
+              echo "❌ 目标安装失败，分析原因..."
+              TARGET_INSTALL_EXIT_CODE=${PIPESTATUS[0]}
+              
+              # 分析目标安装失败原因
+              echo "=== 目标安装错误分析 ==="
+              if [ -f "$TARGET_INSTALL_LOG" ]; then
+                grep -i "error\|failed\|undefined\|missing\|no such file\|cannot create\|Broken pipe" "$TARGET_INSTALL_LOG" | tail -20 > $ERROR_LOG_FILE 2>/dev/null || echo "无明确错误信息"
+                
+                # 检查具体的错误
+                echo "最后目标安装步骤:"
+                tail -50 "$TARGET_INSTALL_LOG" | grep -E "(ERROR|Error|error|Collected errors|failed|Failed)" | tail -20 || echo "无法获取目标安装错误"
+              fi
+              
+              echo "🔧 尝试绕过目标安装直接生成固件..."
+              # 即使目标安装失败，也尝试直接生成固件
+              if make -j1 V=s 2>&1 | tee "${{ env.BUILD_LOG_DIR }}/direct-make.log"; then
+                echo "✅ 直接生成固件成功"
+                TARGET_INSTALL_EXIT_CODE=0
               else
-                echo "❌ 固件生成失败"
-                exit 1
+                echo "❌ 直接生成固件也失败"
+                # 最后一次尝试：使用image目标
+                echo "🔧 尝试使用image目标..."
+                if make image -j1 V=s 2>&1 | tee "${{ env.BUILD_LOG_DIR }}/image-make.log"; then
+                  echo "✅ 使用image目标成功"
+                  TARGET_INSTALL_EXIT_CODE=0
+                else
+                  echo "❌ 所有生成固件的方法都失败"
+                  exit $TARGET_INSTALL_EXIT_CODE
+                fi
               fi
             fi
             
@@ -980,8 +1030,15 @@ jobs:
               echo "关键错误:"
               grep -i "error\|failed\|undefined\|missing\|no such file\|cannot create\|Broken pipe" "$LOG_FILE" | tail -30 || echo "无明确错误信息"
               echo ""
+              
+              # 特别检查目标安装日志
+              if [ -f "$TARGET_INSTALL_LOG" ]; then
+                echo "目标安装错误:"
+                tail -100 "$TARGET_INSTALL_LOG" | grep -E "(ERROR|Error|error|Collected errors|failed|Failed)" | tail -30 || echo "无目标安装错误信息"
+              fi
+              
               echo "最后编译步骤:"
-              tail -150 "$LOG_FILE" | grep -E "(Configuring|Compiling|Linking|Installing|ERROR|Error|error|Collected errors)" | tail -50 || echo "无法获取最后步骤"
+              tail -200 "$LOG_FILE" | grep -E "(Configuring|Compiling|Linking|Installing|ERROR|Error|error|Collected errors|failed|Failed)" | tail -50 || echo "无法获取最后步骤"
               
               # 特别检查目录相关问题
               echo ""
@@ -998,6 +1055,15 @@ jobs:
                   fi
                 fi
               done
+              
+              echo ""
+              echo "🔍 固件生成状态检查:"
+              if [ -d "bin" ]; then
+                echo "bin目录内容:"
+                find bin -name "*.bin" -o -name "*.img" -o -name "*.trx" 2>/dev/null | head -10 || echo "未找到固件文件"
+              else
+                echo "❌ bin目录不存在"
+              fi
             fi
             exit 1
           fi
@@ -1057,6 +1123,17 @@ jobs:
                 fi
               fi
             done
+          fi
+          
+          # 即使没有标准输出，也检查其他常见位置
+          if [ $TOTAL_FIRMWARE_COUNT -eq 0 ]; then
+            echo "🔍 深度搜索固件文件..."
+            # 搜索build_dir中的固件
+            BUILD_FIRMWARE=$(find build_dir -name "*.bin" -o -name "*.img" -o -name "*.trx" 2>/dev/null | head -10)
+            if [ -n "$BUILD_FIRMWARE" ]; then
+              echo "✅ 在build_dir中找到固件相关文件:"
+              echo "$BUILD_FIRMWARE"
+            fi
           fi
           
           echo "📋 收集构建信息和日志..."
@@ -1128,21 +1205,23 @@ jobs:
             echo ""
             echo "=== 错误分析 ==="
             if [ "${{ env.BUILD_STATUS }}" = "failed" ]; then
-              echo "主要错误: opkg锁文件创建失败"
+              echo "主要错误: 目标安装阶段失败"
               echo "根本原因:"
-              echo "  - 路径拼接错误导致双斜杠: //tmp/opkg.lock"
-              echo "  - 目标根文件系统目录结构不完整"
-              echo "  - 编译系统在安装阶段无法创建必要目录"
+              echo "  - 目标设备配置不完整或兼容性问题"
+              echo "  - 内核模块安装过程中出现错误"
+              echo "  - 文件系统目录结构问题"
               echo ""
               echo "已实施的解决方案:"
-              echo "  - 深度目录修复，预创建所有可能的根文件系统目录"
-              echo "  - 动态目录创建，在编译过程中实时修复缺失目录"
-              echo "  - 改进的错误恢复机制，即使安装失败也尝试生成固件"
+              echo "  - 深度目录修复和权限设置"
+              echo "  - 目标设备兼容性检查"
+              echo "  - 多种固件生成回退方案"
+              echo "  - 详细错误日志分析"
               echo ""
               echo "建议进一步排查:"
-              echo "  - 检查OpenWrt版本与配置文件的兼容性"
-              echo "  - 验证目标设备的支持状态"
-              echo "  - 考虑使用更新的源码分支"
+              echo "  - 检查目标设备配置文件是否正确"
+              echo "  - 验证内核版本与目标设备的兼容性"
+              echo "  - 尝试使用不同的源码分支"
+              echo "  - 检查自定义功能是否与目标设备冲突"
             fi
             echo ""
             if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
@@ -1238,13 +1317,14 @@ jobs:
             echo "❌ 构建失败"
             echo "🔍 请查看详细日志分析错误原因"
             echo "📋 检查 Artifacts 中的编译日志"
-            echo "💡 根本问题: opkg锁文件创建失败 (路径拼接错误)"
+            echo "💡 根本问题: 目标安装阶段失败"
             echo "🛠️ 已实施的修复:"
-            echo "  - 深度目录预创建"
-            echo "  - 动态目录修复"
-            echo "  - 改进的错误恢复"
+            echo "  - 深度目录修复和权限设置"
+            echo "  - 目标设备兼容性检查"
+            echo "  - 多种固件生成回退方案"
             echo "🔧 建议进一步操作:"
             echo "  - 检查配置文件与源码版本的兼容性"
-            echo "  - 尝试不同的源码分支"
             echo "  - 验证目标设备支持状态"
+            echo "  - 尝试不同的源码分支"
+            echo "  - 检查自定义功能是否冲突"
           fi
