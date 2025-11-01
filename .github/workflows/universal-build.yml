@@ -448,7 +448,7 @@ jobs:
           # 使用与"智能文件发现"相同的快速搜索策略
           CONFIG_FOUND=""
           
-          # 方法1: 直接路径查找（最快）
+          # 方法1: 直接路径查找（最快）- 在源码目录和配置仓库目录都查找
           echo "🎯 直接路径查找..."
           if [ -f "$CONFIG_PROFILE" ]; then
             CONFIG_FOUND="$CONFIG_PROFILE"
@@ -461,21 +461,39 @@ jobs:
             echo "✅ 在工作区找到配置文件: $CONFIG_FOUND"
           fi
           
-          # 方法2: 受限深度搜索（与文件发现步骤一致）
+          # 方法2: 受限深度搜索 - 在源码目录和配置仓库目录都搜索
           if [ -z "$CONFIG_FOUND" ]; then
             echo "🔍 受限深度搜索..."
+            # 先在源码目录搜索
             CONFIG_FOUND=$(find . -maxdepth 3 -name "$CONFIG_PROFILE" -type f 2>/dev/null | head -1)
+            if [ -z "$CONFIG_FOUND" ]; then
+              # 在配置仓库目录搜索
+              CONFIG_FOUND=$(find $GITHUB_WORKSPACE -maxdepth 3 -name "$CONFIG_PROFILE" -type f 2>/dev/null | head -1)
+            fi
             if [ -n "$CONFIG_FOUND" ]; then
               echo "✅ 通过受限搜索找到配置文件: $CONFIG_FOUND"
             fi
           fi
           
-          # 方法3: 使用文件发现步骤的结果（如果可用）
+          # 方法3: 使用文件发现步骤的结果（如果可用）- 修正路径
           if [ -z "$CONFIG_FOUND" ] && [ -f "${{ env.BUILD_LOG_DIR }}/all_config_files.txt" ]; then
             echo "🔍 使用文件发现缓存..."
-            CONFIG_FOUND=$(grep "$CONFIG_PROFILE" "${{ env.BUILD_LOG_DIR }}/all_config_files.txt" | head -1)
-            if [ -n "$CONFIG_FOUND" ]; then
-              echo "✅ 通过缓存找到配置文件: $CONFIG_FOUND"
+            # 从缓存文件中读取路径，并确保路径正确
+            CACHED_PATH=$(grep "$CONFIG_PROFILE" "${{ env.BUILD_LOG_DIR }}/all_config_files.txt" | head -1)
+            if [ -n "$CACHED_PATH" ]; then
+              # 检查路径是否以 ./ 开头，如果是则转换为绝对路径
+              if [[ "$CACHED_PATH" == ./* ]]; then
+                CONFIG_FOUND="$GITHUB_WORKSPACE/${CACHED_PATH#./}"
+              else
+                CONFIG_FOUND="$CACHED_PATH"
+              fi
+              # 验证文件是否存在
+              if [ -f "$CONFIG_FOUND" ]; then
+                echo "✅ 通过缓存找到配置文件: $CONFIG_FOUND"
+              else
+                echo "⚠️ 缓存中的文件不存在: $CONFIG_FOUND"
+                CONFIG_FOUND=""
+              fi
             fi
           fi
           
@@ -483,6 +501,9 @@ jobs:
           if [ -z "$CONFIG_FOUND" ] && [[ "$CONFIG_PROFILE" == *"*"* ]]; then
             echo "🔍 快速模式匹配..."
             CONFIG_FOUND=$(find . -maxdepth 3 -name "$CONFIG_PROFILE" -type f 2>/dev/null | head -1)
+            if [ -z "$CONFIG_FOUND" ]; then
+              CONFIG_FOUND=$(find $GITHUB_WORKSPACE -maxdepth 3 -name "$CONFIG_PROFILE" -type f 2>/dev/null | head -1)
+            fi
             if [ -n "$CONFIG_FOUND" ]; then
               echo "✅ 通过模式匹配找到配置文件: $CONFIG_FOUND"
             fi
@@ -492,6 +513,9 @@ jobs:
           if [ -z "$CONFIG_FOUND" ]; then
             echo "🔍 显示可用配置文件..."
             AVAILABLE_CONFIGS=$(find . -maxdepth 3 -name "*.config" -o -name ".config_*" -o -name "config_*" 2>/dev/null | head -5)
+            if [ -z "$AVAILABLE_CONFIGS" ]; then
+              AVAILABLE_CONFIGS=$(find $GITHUB_WORKSPACE -maxdepth 3 -name "*.config" -o -name ".config_*" -o -name "config_*" 2>/dev/null | head -5)
+            fi
             if [ -n "$AVAILABLE_CONFIGS" ]; then
               CONFIG_FOUND=$(echo "$AVAILABLE_CONFIGS" | head -1)
               echo "⚠️ 使用第一个找到的配置文件: $CONFIG_FOUND"
@@ -502,17 +526,25 @@ jobs:
           
           if [ -n "$CONFIG_FOUND" ]; then
             echo "📋 复制配置文件: $CONFIG_FOUND -> .config"
-            cp "$CONFIG_FOUND" .config
-            echo "🔍 配置文件基本信息:"
-            CONFIG_SIZE=$(stat -c%s .config 2>/dev/null || echo "未知")
-            echo "  - 文件: $(basename $CONFIG_FOUND)"
-            echo "  - 大小: ${CONFIG_SIZE} 字节"
-            echo "  - 来源: $CONFIG_FOUND"
-            
-            # 快速分析配置
-            TARGET_ARCH=$(grep "CONFIG_TARGET_ARCH_PACKAGES" .config 2>/dev/null | cut -d= -f2 | tr -d '"' | head -1 || echo "未知")
-            echo "  - 架构: $TARGET_ARCH"
-            echo "✅ 配置应用完成"
+            # 确保文件存在
+            if [ -f "$CONFIG_FOUND" ]; then
+              cp "$CONFIG_FOUND" .config
+              echo "🔍 配置文件基本信息:"
+              CONFIG_SIZE=$(stat -c%s .config 2>/dev/null || echo "未知")
+              echo "  - 文件: $(basename $CONFIG_FOUND)"
+              echo "  - 大小: ${CONFIG_SIZE} 字节"
+              echo "  - 来源: $CONFIG_FOUND"
+              
+              # 快速分析配置
+              TARGET_ARCH=$(grep "CONFIG_TARGET_ARCH_PACKAGES" .config 2>/dev/null | cut -d= -f2 | tr -d '"' | head -1 || echo "未知")
+              echo "  - 架构: $TARGET_ARCH"
+              echo "✅ 配置应用完成"
+            else
+              echo "❌ 错误: 配置文件不存在: $CONFIG_FOUND"
+              echo "🔍 验证文件存在性..."
+              ls -la "$(dirname "$CONFIG_FOUND")" 2>/dev/null || echo "目录不存在"
+              exit 1
+            fi
           else
             echo "❌ 错误: 无法找到配置文件 '$CONFIG_PROFILE'"
             echo ""
@@ -520,7 +552,8 @@ jobs:
             echo "当前目录: $(pwd)"
             echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
             echo "快速配置文件列表:"
-            find . -maxdepth 2 -name "*.config" -o -name ".config_*" 2>/dev/null | head -10 || echo "无配置文件"
+            find . -maxdepth 2 -name "*.config" -o -name ".config_*" 2>/dev/null | head -10 || echo "当前目录无配置文件"
+            find $GITHUB_WORKSPACE -maxdepth 2 -name "*.config" -o -name ".config_*" 2>/dev/null | head -10 || echo "工作区无配置文件"
             exit 1
           fi
 
