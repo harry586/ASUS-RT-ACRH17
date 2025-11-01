@@ -844,6 +844,11 @@ jobs:
           echo "  - 编译任务数: $BUILD_JOBS"
           echo "  - CCache: 已启用"
           
+          echo "🔧 修复可能的目录问题..."
+          # 创建必要的目录结构
+          mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root.orig-ipq40xx/tmp 2>/dev/null || true
+          mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root.orig-ipq40xx/tmp 2>/dev/null || true
+          
           echo "🔧 开始编译..."
           LOG_FILE="${{ env.BUILD_LOG_DIR }}/firmware-compile.log"
           ERROR_LOG_FILE="${{ env.BUILD_LOG_DIR }}/firmware-errors.log"
@@ -865,7 +870,16 @@ jobs:
               make package/compile -j$BUILD_JOBS V=sc || true
             }
             
-            echo "阶段4: 最终安装和固件生成..."
+            echo "阶段4: 创建必要的目录结构..."
+            # 确保目标目录存在
+            find build_dir -name "root.orig-*" -type d 2>/dev/null | head -5 | while read dir; do
+              mkdir -p "$dir/tmp" 2>/dev/null || true
+              mkdir -p "$dir/usr/lib/opkg" 2>/dev/null || true
+            done
+            
+            echo "阶段5: 最终安装和固件生成..."
+            # 修复可能的目录权限问题
+            sudo chmod -R 755 build_dir/ staging_dir/ 2>/dev/null || true
             # 跳过有问题的包安装
             make package/install -j1 V=s || {
               echo "⚠️ 部分包安装失败，跳过继续..."
@@ -874,10 +888,14 @@ jobs:
             }
             make target/install -j1 V=s
             
-            echo "阶段5: 编译完成验证..."
+            echo "阶段6: 编译完成验证..."
           } 2>&1 | tee "$LOG_FILE"
           
           COMPILE_EXIT_CODE=${PIPESTATUS[0]}
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
+          echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
+          
           if [ $COMPILE_EXIT_CODE -eq 0 ]; then
             echo "BUILD_STATUS=success" >> $GITHUB_ENV
             echo "🎉 编译成功完成!"
@@ -887,17 +905,24 @@ jobs:
             echo "=== 详细错误分析 ==="
             if [ -f "$LOG_FILE" ]; then
               echo "关键错误:"
-              grep -i "error\|failed\|undefined\|missing\|no such file\|cannot create" "$LOG_FILE" | tail -30 || echo "无明确错误信息"
+              grep -i "error\|failed\|undefined\|missing\|no such file\|cannot create\|Broken pipe" "$LOG_FILE" | tail -30 || echo "无明确错误信息"
               echo ""
               echo "最后编译步骤:"
-              tail -50 "$LOG_FILE" | grep -E "(Configuring|Compiling|Linking|Installing|ERROR|Error|error)" | tail -20 || echo "无法获取最后步骤"
+              tail -100 "$LOG_FILE" | grep -E "(Configuring|Compiling|Linking|Installing|ERROR|Error|error|Collected errors)" | tail -30 || echo "无法获取最后步骤"
+              
+              # 特别检查目录相关问题
+              echo ""
+              echo "🔍 目录结构检查:"
+              find build_dir -name "root.orig-*" -type d 2>/dev/null | head -3 | while read dir; do
+                if [ -d "$dir" ]; then
+                  echo "检查目录: $dir"
+                  ls -la "$dir/" 2>/dev/null | head -5 || echo "无法访问目录"
+                fi
+              done
             fi
             exit 1
           fi
           
-          END_TIME=$(date +%s)
-          DURATION=$((END_TIME - START_TIME))
-          echo "BUILD_DURATION=$DURATION" >> $GITHUB_ENV
           echo "⏱️ 总编译耗时: ${DURATION}秒 ($(($DURATION/60))分钟)"
 
       - name: 🔍 详细固件产物验证与收集
@@ -930,6 +955,8 @@ jobs:
             done
           else
             echo "⚠️ 标准输出目录 bin/targets 不存在"
+            echo "📁 当前 bin 目录内容:"
+            ls -la bin/ 2>/dev/null || echo "bin 目录不存在"
           fi
           
           # 在其他位置搜索
@@ -1019,6 +1046,20 @@ jobs:
             echo "CPU核心: $(nproc)"
             echo "内存: $(free -h | awk '/^Mem:/{print $2}')"
             echo "磁盘空间: $(df -h /mnt | awk 'NR==2{print $4}') 可用"
+            echo ""
+            echo "=== 错误分析 ==="
+            if [ "${{ env.BUILD_STATUS }}" = "failed" ]; then
+              echo "主要错误: opkg锁文件创建失败"
+              echo "可能原因:"
+              echo "  - 目标根文件系统目录不存在"
+              echo "  - 目录权限问题"
+              echo "  - 编译过程中目录结构未正确创建"
+              echo ""
+              echo "建议解决方案:"
+              echo "  - 检查配置文件是否正确"
+              echo "  - 确保编译依赖完整"
+              echo "  - 尝试清理后重新编译"
+            fi
             echo ""
             if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
               echo "=== 产物信息 ==="
@@ -1117,4 +1158,5 @@ jobs:
             echo "  - 检查配置文件是否正确"
             echo "  - 查看依赖包是否完整"
             echo "  - 确认源码分支是否可用"
+            echo "  - 检查磁盘空间是否充足"
           fi
