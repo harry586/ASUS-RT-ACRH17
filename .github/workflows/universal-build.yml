@@ -168,8 +168,13 @@ jobs:
             echo "搜索目录: $pattern"
             found_dir=$(find . -maxdepth 2 -type d -name "$pattern" 2>/dev/null | head -1)
             if [ -n "$found_dir" ]; then
-              CUSTOM_FEATURES_DIR="$found_dir"
-              echo "✅ 找到自定义功能目录: $found_dir"
+              # 将相对路径转换为绝对路径
+              if [[ "$found_dir" == ./* ]]; then
+                CUSTOM_FEATURES_DIR="$GITHUB_WORKSPACE/${found_dir#./}"
+              else
+                CUSTOM_FEATURES_DIR="$GITHUB_WORKSPACE/$found_dir"
+              fi
+              echo "✅ 找到自定义功能目录: $found_dir (绝对路径: $CUSTOM_FEATURES_DIR)"
               break
             fi
           done
@@ -183,7 +188,7 @@ jobs:
             
             echo "📦 IPK文件检查:"
             IPK_FILES=$(find "$CUSTOM_FEATURES_DIR" -name "*.ipk" -type f 2>/dev/null)
-            IPK_COUNT=$(echo "$IPK_FILES" | grep -c . || echo 0)
+            IPK_COUNT=$(echo "$IPK_FILES" | grep -v '^$' | wc -l 2>/dev/null || echo 0)
             if [ "$IPK_COUNT" -gt 0 ]; then
               echo "✅ 找到 $IPK_COUNT 个IPK文件:"
               echo "$IPK_FILES" | head -10
@@ -193,7 +198,7 @@ jobs:
             
             echo "📜 脚本文件检查:"
             SCRIPT_FILES=$(find "$CUSTOM_FEATURES_DIR" -name "*.sh" -type f 2>/dev/null)
-            SCRIPT_COUNT=$(echo "$SCRIPT_FILES" | grep -c . || echo 0)
+            SCRIPT_COUNT=$(echo "$SCRIPT_FILES" | grep -v '^$' | wc -l 2>/dev/null || echo 0)
             if [ "$SCRIPT_COUNT" -gt 0 ]; then
               echo "✅ 找到 $SCRIPT_COUNT 个脚本文件:"
               echo "$SCRIPT_FILES" | head -10
@@ -203,7 +208,7 @@ jobs:
             
             echo "🔧 补丁文件检查:"
             PATCH_FILES=$(find "$CUSTOM_FEATURES_DIR" -name "*.patch" -type f 2>/dev/null)
-            PATCH_COUNT=$(echo "$PATCH_FILES" | grep -c . || echo 0)
+            PATCH_COUNT=$(echo "$PATCH_FILES" | grep -v '^$' | wc -l 2>/dev/null || echo 0)
             if [ "$PATCH_COUNT" -gt 0 ]; then
               echo "✅ 找到 $PATCH_COUNT 个补丁文件:"
               echo "$PATCH_FILES" | head -10
@@ -681,9 +686,23 @@ jobs:
         run: |
           cd ${{ env.SOURCE_DIR }}
           echo "处理详细自定义功能..."
+          
+          # 使用配置仓库的绝对路径
+          CONFIG_REPO_DIR="$GITHUB_WORKSPACE"
           CUSTOM_FEATURES_DIR="${{ env.CUSTOM_FEATURES_DIR }}"
-          if [ -n "$CUSTOM_FEATURES_DIR" ]; then
-            echo "🔍 使用找到的自定义功能目录: $CUSTOM_FEATURES_DIR"
+          
+          # 如果环境变量中有设置，使用环境变量，否则尝试默认路径
+          if [ -z "$CUSTOM_FEATURES_DIR" ]; then
+            CUSTOM_FEATURES_DIR="$CONFIG_REPO_DIR/firmware-config/custom-features"
+            echo "ℹ️ 使用默认自定义功能目录: $CUSTOM_FEATURES_DIR"
+          fi
+          
+          if [ -n "$CUSTOM_FEATURES_DIR" ] && [ -d "$CUSTOM_FEATURES_DIR" ]; then
+            echo "🔍 使用自定义功能目录: $CUSTOM_FEATURES_DIR"
+            
+            # 验证目录内容
+            echo "📁 目录内容验证:"
+            ls -la "$CUSTOM_FEATURES_DIR" 2>/dev/null || echo "无法访问目录"
             
             # 详细处理预编译IPK包
             echo "📦 详细处理预编译IPK包..."
@@ -694,7 +713,7 @@ jobs:
               if [ -d "$ipk_dir" ]; then
                 echo "🔍 检查IPK目录: $ipk_dir"
                 IPK_FILES=$(find "$ipk_dir" -name "*.ipk" -type f 2>/dev/null)
-                IPK_COUNT=$(echo "$IPK_FILES" | grep -c . || echo 0)
+                IPK_COUNT=$(echo "$IPK_FILES" | grep -v '^$' | wc -l 2>/dev/null || echo 0)
                 
                 if [ "$IPK_COUNT" -gt 0 ]; then
                   echo "✅ 在 $ipk_dir 找到 $IPK_COUNT 个IPK文件"
@@ -732,7 +751,7 @@ jobs:
               if [ -d "$script_dir" ]; then
                 echo "🔍 检查脚本目录: $script_dir"
                 SCRIPT_FILES=$(find "$script_dir" -name "*.sh" -type f 2>/dev/null)
-                SCRIPT_COUNT=$(echo "$SCRIPT_FILES" | grep -c . || echo 0)
+                SCRIPT_COUNT=$(echo "$SCRIPT_FILES" | grep -v '^$' | wc -l 2>/dev/null || echo 0)
                 
                 if [ "$SCRIPT_COUNT" -gt 0 ]; then
                   echo "✅ 在 $script_dir 找到 $SCRIPT_COUNT 个脚本文件"
@@ -776,7 +795,7 @@ jobs:
             echo ""
             echo "🔧 处理自定义补丁..."
             PATCH_FILES=$(find "$CUSTOM_FEATURES_DIR" -name "*.patch" -type f 2>/dev/null)
-            PATCH_COUNT=$(echo "$PATCH_FILES" | grep -c . || echo 0)
+            PATCH_COUNT=$(echo "$PATCH_FILES" | grep -v '^$' | wc -l 2>/dev/null || echo 0)
             
             if [ "$PATCH_COUNT" -gt 0 ]; then
               echo "✅ 找到 $PATCH_COUNT 个补丁文件"
@@ -795,7 +814,8 @@ jobs:
             fi
             
           else
-            echo "ℹ️ 无自定义功能目录，跳过自定义功能处理"
+            echo "ℹ️ 无自定义功能目录或目录不存在，跳过自定义功能处理"
+            echo "搜索的目录: $CUSTOM_FEATURES_DIR"
           fi
           echo "✅ 自定义功能处理完成"
 
