@@ -181,8 +181,6 @@ jobs:
           if [ -n "$REPO_JSON_FOUND" ]; then
             echo "✅ 找到 repositories.json: $REPO_JSON_FOUND"
             echo "REPO_JSON_PATH=$REPO_JSON_FOUND" >> $GITHUB_ENV
-            
-            # 分析 repositories.json 内容
             echo "📊 repositories.json 内容分析:"
             jq -r '.repositories | keys[] as $k | "  - \($k): \(.[$k].description // "无描述")"' "$REPO_JSON_FOUND" 2>/dev/null || echo "无法解析JSON内容"
           else
@@ -234,7 +232,6 @@ jobs:
           
           if [ -n "$CUSTOM_FEATURES_DIR" ]; then
             echo "CUSTOM_FEATURES_DIR=$CUSTOM_FEATURES_DIR" >> $GITHUB_ENV
-            
             echo "🔍 自定义目录结构分析:"
             find "$CUSTOM_FEATURES_DIR" -type f -name "*.ipk" -o -name "*.sh" -o -name "*.patch" 2>/dev/null | head -10 | while read file; do
               echo "  - $(basename "$file")"
@@ -473,7 +470,6 @@ jobs:
           cd ${{ env.SOURCE_DIR }}
           echo "开始智能源码初始化..."
           START_TIME=$(date +%s)
-          
           echo "🔧 Feeds配置检测..."
           FEEDS_CONF_FOUND=""
           for feeds_file in feeds.conf feeds.conf.default .feeds.conf .feeds.conf.default; do
@@ -489,12 +485,14 @@ jobs:
           
           if [ -z "$FEEDS_CONF_FOUND" ]; then
             echo "⚠️ 未找到feeds配置，创建通用配置"
-            echo "src-git packages https://git.openwrt.org/feed/packages.git" > feeds.conf
-            echo "src-git luci https://git.openwrt.org/feed/luci.git" >> feeds.conf
-            echo "src-git routing https://git.openwrt.org/feed/routing.git" >> feeds.conf
-            echo "src-git telephony https://git.openwrt.org/feed/telephony.git" >> feeds.conf
-            echo "src-git base https://git.openwrt.org/feed/base.git" >> feeds.conf
-            echo "src-git freifunk https://github.com/freifunk/openwrt-packages.git" >> feeds.conf
+            cat > feeds.conf << 'EOF'
+src-git packages https://git.openwrt.org/feed/packages.git
+src-git luci https://git.openwrt.org/feed/luci.git
+src-git routing https://git.openwrt.org/feed/routing.git
+src-git telephony https://git.openwrt.org/feed/telephony.git
+src-git base https://git.openwrt.org/feed/base.git
+src-git freifunk https://github.com/freifunk/openwrt-packages.git
+EOF
           fi
           
           echo "🔄 更新Feeds..."
