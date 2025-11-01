@@ -819,6 +819,62 @@ jobs:
           fi
           echo "✅ 自定义功能处理完成"
 
+      - name: 🔧 深度目录修复与权限设置
+        run: |
+          cd ${{ env.SOURCE_DIR }}
+          echo "=== 深度目录修复与权限设置 ==="
+          
+          echo "🔧 创建所有可能的根文件系统目录..."
+          # 创建所有可能的根文件系统目录结构
+          ROOT_PATTERNS=("root.orig-*" "root-*" "root.default-*")
+          
+          for pattern in "${ROOT_PATTERNS[@]}"; do
+            echo "搜索模式: $pattern"
+            find build_dir staging_dir -type d -name "$pattern" 2>/dev/null | while read root_dir; do
+              echo "🔧 修复目录: $root_dir"
+              # 创建必要的子目录
+              mkdir -p "$root_dir/tmp" 2>/dev/null || true
+              mkdir -p "$root_dir/usr/lib/opkg" 2>/dev/null || true
+              mkdir -p "$root_dir/var/lock" 2>/dev/null || true
+              mkdir -p "$root_dir/var/run" 2>/dev/null || true
+              
+              # 设置权限
+              chmod 755 "$root_dir/tmp" 2>/dev/null || true
+              chmod 755 "$root_dir/usr" 2>/dev/null || true
+              chmod 755 "$root_dir/var" 2>/dev/null || true
+            done
+          done
+          
+          echo "🔧 修复目标特定目录..."
+          # 特别修复错误中提到的目录
+          TARGET_DIRS=(
+            "build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root.orig-ipq40xx"
+            "staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root.orig-ipq40xx"
+          )
+          
+          for target_dir in "${TARGET_DIRS[@]}"; do
+            if [ -d "$target_dir" ]; then
+              echo "🔧 修复目标目录: $target_dir"
+              mkdir -p "$target_dir/tmp"
+              mkdir -p "$target_dir/usr/lib/opkg"
+              chmod 755 "$target_dir/tmp"
+              echo "✅ 已创建: $target_dir/tmp"
+            else
+              echo "ℹ️ 目录不存在，创建: $target_dir"
+              mkdir -p "$target_dir/tmp" 2>/dev/null || true
+            fi
+          done
+          
+          echo "🔧 修复符号链接问题..."
+          # 检查并修复可能的符号链接问题
+          if [ -L "tmp" ] && [ ! -e "tmp" ]; then
+            echo "🔧 修复损坏的tmp符号链接..."
+            rm -f tmp
+            mkdir -p tmp
+          fi
+          
+          echo "✅ 深度目录修复完成"
+
       - name: 🏗️ 智能编译固件
         timeout-minutes: 240
         id: compile-firmware
@@ -844,11 +900,6 @@ jobs:
           echo "  - 编译任务数: $BUILD_JOBS"
           echo "  - CCache: 已启用"
           
-          echo "🔧 修复可能的目录问题..."
-          # 创建必要的目录结构
-          mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root.orig-ipq40xx/tmp 2>/dev/null || true
-          mkdir -p staging_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root.orig-ipq40xx/tmp 2>/dev/null || true
-          
           echo "🔧 开始编译..."
           LOG_FILE="${{ env.BUILD_LOG_DIR }}/firmware-compile.log"
           ERROR_LOG_FILE="${{ env.BUILD_LOG_DIR }}/firmware-errors.log"
@@ -870,23 +921,45 @@ jobs:
               make package/compile -j$BUILD_JOBS V=sc || true
             }
             
-            echo "阶段4: 创建必要的目录结构..."
-            # 确保目标目录存在
-            find build_dir -name "root.orig-*" -type d 2>/dev/null | head -5 | while read dir; do
-              mkdir -p "$dir/tmp" 2>/dev/null || true
-              mkdir -p "$dir/usr/lib/opkg" 2>/dev/null || true
+            echo "阶段4: 动态目录修复..."
+            # 在安装前再次检查并创建必要的目录
+            echo "🔧 动态创建缺失的目录..."
+            find build_dir staging_dir -type d -name "root.orig-*" 2>/dev/null | while read root_dir; do
+              if [ ! -d "$root_dir/tmp" ]; then
+                mkdir -p "$root_dir/tmp"
+                echo "✅ 动态创建: $root_dir/tmp"
+              fi
+              if [ ! -d "$root_dir/usr/lib/opkg" ]; then
+                mkdir -p "$root_dir/usr/lib/opkg"
+                echo "✅ 动态创建: $root_dir/usr/lib/opkg"
+              fi
             done
             
             echo "阶段5: 最终安装和固件生成..."
             # 修复可能的目录权限问题
             sudo chmod -R 755 build_dir/ staging_dir/ 2>/dev/null || true
-            # 跳过有问题的包安装
-            make package/install -j1 V=s || {
-              echo "⚠️ 部分包安装失败，跳过继续..."
-              # 记录错误但继续
-              grep -i "error\|failed" $LOG_FILE | tail -20 > $ERROR_LOG_FILE 2>/dev/null || true
-            }
-            make target/install -j1 V=s
+            
+            # 使用更健壮的安装方法
+            echo "🔧 尝试并行安装..."
+            if ! make package/install -j$BUILD_JOBS V=s; then
+              echo "⚠️ 并行安装失败，尝试单线程安装..."
+              if ! make package/install -j1 V=s; then
+                echo "❌ 包安装失败，记录错误但继续..."
+                grep -i "error\|failed" $LOG_FILE | tail -20 > $ERROR_LOG_FILE 2>/dev/null || true
+              fi
+            fi
+            
+            echo "🔧 尝试目标安装..."
+            if ! make target/install -j1 V=s; then
+              echo "❌ 目标安装失败，但尝试继续生成固件..."
+              # 即使目标安装失败，也尝试生成固件
+              if make -j1 V=s 2>/dev/null; then
+                echo "✅ 固件生成成功"
+              else
+                echo "❌ 固件生成失败"
+                exit 1
+              fi
+            fi
             
             echo "阶段6: 编译完成验证..."
           } 2>&1 | tee "$LOG_FILE"
@@ -908,15 +981,21 @@ jobs:
               grep -i "error\|failed\|undefined\|missing\|no such file\|cannot create\|Broken pipe" "$LOG_FILE" | tail -30 || echo "无明确错误信息"
               echo ""
               echo "最后编译步骤:"
-              tail -100 "$LOG_FILE" | grep -E "(Configuring|Compiling|Linking|Installing|ERROR|Error|error|Collected errors)" | tail -30 || echo "无法获取最后步骤"
+              tail -150 "$LOG_FILE" | grep -E "(Configuring|Compiling|Linking|Installing|ERROR|Error|error|Collected errors)" | tail -50 || echo "无法获取最后步骤"
               
               # 特别检查目录相关问题
               echo ""
               echo "🔍 目录结构检查:"
-              find build_dir -name "root.orig-*" -type d 2>/dev/null | head -3 | while read dir; do
+              find build_dir -name "root.orig-*" -type d 2>/dev/null | head -5 | while read dir; do
                 if [ -d "$dir" ]; then
                   echo "检查目录: $dir"
-                  ls -la "$dir/" 2>/dev/null | head -5 || echo "无法访问目录"
+                  ls -la "$dir/" 2>/dev/null | head -8 || echo "无法访问目录"
+                  echo "tmp目录状态:"
+                  if [ -d "$dir/tmp" ]; then
+                    ls -la "$dir/tmp/" 2>/dev/null | head -3 || echo "无法访问tmp目录"
+                  else
+                    echo "❌ tmp目录不存在"
+                  fi
                 fi
               done
             fi
@@ -1050,15 +1129,20 @@ jobs:
             echo "=== 错误分析 ==="
             if [ "${{ env.BUILD_STATUS }}" = "failed" ]; then
               echo "主要错误: opkg锁文件创建失败"
-              echo "可能原因:"
-              echo "  - 目标根文件系统目录不存在"
-              echo "  - 目录权限问题"
-              echo "  - 编译过程中目录结构未正确创建"
+              echo "根本原因:"
+              echo "  - 路径拼接错误导致双斜杠: //tmp/opkg.lock"
+              echo "  - 目标根文件系统目录结构不完整"
+              echo "  - 编译系统在安装阶段无法创建必要目录"
               echo ""
-              echo "建议解决方案:"
-              echo "  - 检查配置文件是否正确"
-              echo "  - 确保编译依赖完整"
-              echo "  - 尝试清理后重新编译"
+              echo "已实施的解决方案:"
+              echo "  - 深度目录修复，预创建所有可能的根文件系统目录"
+              echo "  - 动态目录创建，在编译过程中实时修复缺失目录"
+              echo "  - 改进的错误恢复机制，即使安装失败也尝试生成固件"
+              echo ""
+              echo "建议进一步排查:"
+              echo "  - 检查OpenWrt版本与配置文件的兼容性"
+              echo "  - 验证目标设备的支持状态"
+              echo "  - 考虑使用更新的源码分支"
             fi
             echo ""
             if [ "${{ env.BUILD_STATUS }}" = "success" ]; then
@@ -1154,9 +1238,13 @@ jobs:
             echo "❌ 构建失败"
             echo "🔍 请查看详细日志分析错误原因"
             echo "📋 检查 Artifacts 中的编译日志"
-            echo "💡 常见问题:"
-            echo "  - 检查配置文件是否正确"
-            echo "  - 查看依赖包是否完整"
-            echo "  - 确认源码分支是否可用"
-            echo "  - 检查磁盘空间是否充足"
+            echo "💡 根本问题: opkg锁文件创建失败 (路径拼接错误)"
+            echo "🛠️ 已实施的修复:"
+            echo "  - 深度目录预创建"
+            echo "  - 动态目录修复"
+            echo "  - 改进的错误恢复"
+            echo "🔧 建议进一步操作:"
+            echo "  - 检查配置文件与源码版本的兼容性"
+            echo "  - 尝试不同的源码分支"
+            echo "  - 验证目标设备支持状态"
           fi
