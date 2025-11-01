@@ -992,19 +992,10 @@ jobs:
             echo "✅ 无冲突的init目录"
           fi
           
-          # 确保关键目录存在 - 特别是opkg需要的tmp目录
+          # 确保关键目录存在
           echo "📁 确保关键编译目录存在..."
           mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx 2>/dev/null || true
           mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-ipq40xx_generic/linux-5.4.255/.image 2>/dev/null || true
-          
-          # 特别创建opkg需要的tmp目录 - 修复opkg.lock错误
-          echo "📁 创建opkg临时目录..."
-          mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root.orig-ipq40xx/tmp 2>/dev/null || true
-          mkdir -p build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/root-ipq40xx/tmp 2>/dev/null || true
-          
-          # 设置tmp目录权限
-          echo "🔒 设置临时目录权限..."
-          find build_dir -name "tmp" -type d -exec chmod 1777 {} \; 2>/dev/null || true
           
           echo "✅ 编译前目录修复完成"
 
@@ -1158,7 +1149,7 @@ jobs:
             if [ -f "$LOG_FILE" ]; then
               # 显示关键错误信息
               echo "关键错误:"
-              grep -i "error\|failed\|undefined\|missing\|no such file\|cannot create\|Is a directory\|opkg.lock" "$LOG_FILE" | tail -20 || echo "无明确错误信息"
+              grep -i "error\|failed\|undefined\|missing\|no such file\|cannot create\|Is a directory" "$LOG_FILE" | tail -20 || echo "无明确错误信息"
               
               # 检查特定的目录错误
               if grep -q "cannot create.*No such file or directory" "$LOG_FILE"; then
@@ -1187,21 +1178,6 @@ jobs:
                   fi
                 done
                 echo "✅ 冲突修复完成"
-              fi
-              
-              # 检查opkg.lock错误
-              if grep -q "opkg.lock" "$LOG_FILE"; then
-                echo ""
-                echo "🔧 检测到opkg锁文件错误，尝试修复..."
-                # 创建所有可能的opkg临时目录
-                find build_dir -name "root.orig-*" -type d 2>/dev/null | while read -r root_dir; do
-                  if [ -d "$root_dir" ]; then
-                    mkdir -p "$root_dir/tmp" 2>/dev/null || true
-                    chmod 1777 "$root_dir/tmp" 2>/dev/null || true
-                    echo "✅ 创建opkg临时目录: $root_dir/tmp"
-                  fi
-                done
-                echo "✅ opkg锁文件修复完成"
               fi
             else
               echo "无编译日志文件"
